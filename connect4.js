@@ -6,21 +6,22 @@
   Board: 7 × 6
   Goal: Connect 4
 
+  v1.2 Solver Upgrade
+
   Features:
   - BigInt bitboards
   - Gravity
-  - Win detection
-  - Immediate win / loss detection
+  - Fast win detection
+  - Immediate win detection
   - Non-losing move pruning
   - Center-first move ordering
   - Threat-based move ordering
-  - Negamax
-  - Alpha-Beta pruning
-  - Transposition table
-  - Iterative deepening
-  - Time-limited AI search
-  - Exact W / D / L proof search
-  - Undo / Redo support through snapshots
+  - Alpha-Beta Negamax
+  - Transposition table with bounds
+  - Exact Connect Four score search
+  - Exact W / D / L + distance
+  - Time-limited analysis
+  - Undo / Redo
 
   Public API:
   window.Connect4Engine
@@ -40,14 +41,12 @@
 
   const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6];
 
-  const WIN_SCORE = 1000000;
-  const INF = 2000000000;
-
   const EXACT_WIN = "WIN";
   const EXACT_DRAW = "DRAW";
   const EXACT_LOSS = "LOSS";
   const EXACT_UNKNOWN = "UNKNOWN";
 
+  const INF = 1000;
 
   // ============================================================
   // BITBOARD MASKS
@@ -58,6 +57,7 @@
   const TOP_MASKS = [];
 
   let BOARD_MASK = 0n;
+  let BOTTOM_MASK_ALL = 0n;
 
   for (let col = 0; col < WIDTH; col++) {
     const shift = BigInt(col * STRIDE);
@@ -74,8 +74,8 @@
       );
 
     BOARD_MASK |= COLUMN_MASKS[col];
+    BOTTOM_MASK_ALL |= BOTTOM_MASKS[col];
   }
-
 
   // ============================================================
   // BIT HELPERS
@@ -91,7 +91,6 @@
 
     return count;
   }
-
 
   function hasAlignment(position) {
     let m;
@@ -110,7 +109,10 @@
     // Horizontal
     m =
       position &
-      (position >> BigInt(STRIDE));
+      (
+        position >>
+        BigInt(STRIDE)
+      );
 
     if (
       (
@@ -168,7 +170,6 @@
 
     return false;
   }
-
 
   function winningPosition(
     position,
@@ -238,7 +239,6 @@
         BigInt(3 * STRIDE)
       );
 
-
     // Diagonal /
     p =
       (
@@ -287,7 +287,6 @@
         position >>
         BigInt(3 * HEIGHT)
       );
-
 
     // Diagonal \
     const diagonalShift =
@@ -355,7 +354,6 @@
     );
   }
 
-
   // ============================================================
   // POSITION
   // ============================================================
@@ -366,20 +364,10 @@
       mask = 0n,
       moves = 0
     ) {
-      /*
-        current:
-        stones belonging to the
-        player whose turn it is.
-
-        mask:
-        every occupied square.
-      */
-
       this.current = current;
       this.mask = mask;
       this.moves = moves;
     }
-
 
     clone() {
       return new Position(
@@ -388,7 +376,6 @@
         this.moves
       );
     }
-
 
     canPlay(col) {
       return (
@@ -399,33 +386,15 @@
       );
     }
 
-
     possible() {
       return (
         (
           this.mask +
-          this.bottomMaskAll()
+          BOTTOM_MASK_ALL
         ) &
         BOARD_MASK
       );
     }
-
-
-    bottomMaskAll() {
-      let result = 0n;
-
-      for (
-        let col = 0;
-        col < WIDTH;
-        col++
-      ) {
-        result |=
-          BOTTOM_MASKS[col];
-      }
-
-      return result;
-    }
-
 
     moveBit(col) {
       return (
@@ -437,30 +406,20 @@
       );
     }
 
-
     isWinningMove(col) {
       if (!this.canPlay(col)) {
         return false;
       }
 
-      const move =
-        this.moveBit(col);
-
       return hasAlignment(
-        this.current | move
+        this.current |
+        this.moveBit(col)
       );
     }
-
 
     play(col) {
       const move =
         this.moveBit(col);
-
-      /*
-        Swap point of view first.
-        After the move, current
-        represents the next player.
-      */
 
       this.current ^=
         this.mask;
@@ -470,21 +429,12 @@
       this.moves++;
     }
 
-
     key() {
-      /*
-        Same idea used by compact
-        Connect Four solvers:
-        current + mask uniquely
-        represents the position.
-      */
-
       return (
         this.current +
         this.mask
       );
     }
-
 
     opponentPosition() {
       return (
@@ -492,7 +442,6 @@
         this.current
       );
     }
-
 
     possibleNonLosingMoves() {
       let possible =
@@ -511,12 +460,6 @@
       if (
         forcedMoves !== 0n
       ) {
-        /*
-          Two immediate opponent
-          wins means there is no
-          defensive move.
-        */
-
         if (
           (
             forcedMoves &
@@ -530,12 +473,6 @@
           forcedMoves;
       }
 
-      /*
-        Never play directly under
-        a square that becomes an
-        immediate opponent win.
-      */
-
       return (
         possible &
         ~(
@@ -543,7 +480,6 @@
         )
       );
     }
-
 
     moveScore(move) {
       return popcount(
@@ -554,7 +490,6 @@
       );
     }
   }
-
 
   // ============================================================
   // GAME STATE
@@ -583,7 +518,6 @@
   let gameOver = false;
   let winner = null;
 
-
   // ============================================================
   // SEARCH STATE
   // ============================================================
@@ -592,14 +526,23 @@
   let nodes = 0;
   let timedOut = false;
 
-  const transposition =
-    new Map();
+  /*
+    Exact transposition table.
+
+    Each entry can contain:
+
+    lower:
+      proven lower score bound
+
+    upper:
+      proven upper score bound
+  */
 
   const exactTable =
     new Map();
 
-  const MAX_TT_SIZE = 300000;
-
+  const MAX_TT_SIZE =
+    500000;
 
   // ============================================================
   // TIME
@@ -613,18 +556,17 @@
     timedOut = false;
   }
 
-
-  function outOfTime() {
+  function checkTime() {
     nodes++;
 
     /*
-      Checking the clock on every
-      single node is surprisingly
-      expensive on phones.
+      Checking performance.now()
+      constantly is expensive,
+      especially on mobile.
     */
 
     if (
-      (nodes & 511) !== 0
+      (nodes & 1023) !== 0
     ) {
       return false;
     }
@@ -640,20 +582,15 @@
     return false;
   }
 
-
   // ============================================================
   // MOVE ORDERING
   // ============================================================
 
-  function orderedMoves(pos) {
-    const possible =
-      pos.possibleNonLosingMoves();
-
-    if (possible === 0n) {
-      return [];
-    }
-
-    const moves = [];
+  function orderedMovesFromMask(
+    pos,
+    possible
+  ) {
+    const result = [];
 
     for (
       const col
@@ -676,133 +613,91 @@
         pos.moveScore(move) *
         1000;
 
-      /*
-        Small center preference
-        after tactical ordering.
-      */
-
       score +=
         20 -
         Math.abs(3 - col);
 
-      moves.push({
+      result.push({
         col,
         move,
         score
       });
     }
 
-    moves.sort(
+    result.sort(
       (a, b) =>
         b.score - a.score
     );
 
-    return moves;
+    return result;
   }
 
+  function orderedMoves(pos) {
+    return orderedMovesFromMask(
+      pos,
+      pos.possibleNonLosingMoves()
+    );
+  }
 
   // ============================================================
-  // POSITION EVALUATION
+  // EXACT SCORE
   // ============================================================
 
-  function heuristic(pos) {
-    const mine =
-      pos.current;
+  /*
+    Score convention:
 
-    const opponent =
-      pos.opponentPosition();
+    Positive:
+      current player can force win.
 
-    let score = 0;
+    Zero:
+      draw.
 
-    const myWins =
-      winningPosition(
-        mine,
-        pos.mask
-      );
+    Negative:
+      current player will lose
+      against perfect play.
 
-    const enemyWins =
-      winningPosition(
-        opponent,
-        pos.mask
-      );
+    Magnitude also encodes how
+    early the terminal result occurs.
 
-    score +=
-      popcount(myWins) *
-      500;
+    This is the classic compact
+    Connect Four score convention.
+  */
 
-    score -=
-      popcount(enemyWins) *
-      650;
+  function immediateWinScore(pos) {
+    return Math.floor(
+      (
+        MAX_MOVES +
+        1 -
+        pos.moves
+      ) / 2
+    );
+  }
+
+  function forcedLossScore(pos) {
+    return -Math.floor(
+      (
+        MAX_MOVES -
+        pos.moves
+      ) / 2
+    );
+  }
+
+  // ============================================================
+  // EXACT NEGAMAX
+  // ============================================================
+
+  function exactNegamax(
+    pos,
+    alpha,
+    beta
+  ) {
+    if (checkTime()) {
+      return null;
+    }
 
     /*
-      Center column.
+      Draw because board is full.
     */
-
-    const center =
-      COLUMN_MASKS[3];
-
-    score +=
-      popcount(
-        mine & center
-      ) * 8;
-
-    score -=
-      popcount(
-        opponent & center
-      ) * 8;
-
-    return score;
-  }
-
-
-  // ============================================================
-  // TRANSPOSITION TABLE
-  // ============================================================
-
-  function ttKey(
-    pos,
-    depth
-  ) {
-    return (
-      pos.key().toString() +
-      ":" +
-      depth
-    );
-  }
-
-
-  function storeTT(
-    key,
-    value
-  ) {
-    if (
-      transposition.size >
-      MAX_TT_SIZE
-    ) {
-      transposition.clear();
-    }
-
-    transposition.set(
-      key,
-      value
-    );
-  }
-
-
-  // ============================================================
-  // NEGAMAX + ALPHA BETA
-  // ============================================================
-
-  function negamax(
-    pos,
-    depth,
-    alpha,
-    beta,
-    ply
-  ) {
-    if (outOfTime()) {
-      return 0;
-    }
 
     if (
       pos.moves >=
@@ -812,9 +707,7 @@
     }
 
     /*
-      If current player can win
-      immediately, no reason to
-      search further.
+      Immediate winning move.
     */
 
     for (
@@ -825,8 +718,8 @@
         pos.canPlay(col) &&
         pos.isWinningMove(col)
       ) {
-        return (
-          WIN_SCORE - ply
+        return immediateWinScore(
+          pos
         );
       }
     }
@@ -834,33 +727,103 @@
     const possible =
       pos.possibleNonLosingMoves();
 
+    /*
+      No move can stop the
+      opponent's immediate win.
+    */
+
     if (possible === 0n) {
-      return (
-        -WIN_SCORE + ply
+      return forcedLossScore(
+        pos
       );
     }
 
-    if (depth <= 0) {
-      return heuristic(pos);
+    /*
+      Maximum score still possible
+      without an immediate win.
+    */
+
+    const maxPossible =
+      Math.floor(
+        (
+          MAX_MOVES -
+          1 -
+          pos.moves
+        ) / 2
+      );
+
+    if (beta > maxPossible) {
+      beta = maxPossible;
+
+      if (alpha >= beta) {
+        return beta;
+      }
+    }
+
+    /*
+      Minimum score still possible.
+    */
+
+    const minPossible =
+      -Math.floor(
+        (
+          MAX_MOVES -
+          2 -
+          pos.moves
+        ) / 2
+      );
+
+    if (alpha < minPossible) {
+      alpha = minPossible;
+
+      if (alpha >= beta) {
+        return alpha;
+      }
     }
 
     const key =
-      ttKey(
-        pos,
-        depth
-      );
+      pos.key();
 
     const cached =
-      transposition.get(key);
+      exactTable.get(key);
 
-    if (
-      cached !== undefined
-    ) {
-      return cached;
+    if (cached !== undefined) {
+      if (
+        cached.lower !== undefined
+      ) {
+        alpha =
+          Math.max(
+            alpha,
+            cached.lower
+          );
+      }
+
+      if (
+        cached.upper !== undefined
+      ) {
+        beta =
+          Math.min(
+            beta,
+            cached.upper
+          );
+      }
+
+      if (alpha >= beta) {
+        return alpha;
+      }
     }
 
+    const originalAlpha =
+      alpha;
+
+    const originalBeta =
+      beta;
+
     const moves =
-      orderedMoves(pos);
+      orderedMovesFromMask(
+        pos,
+        possible
+      );
 
     let best =
       -INF;
@@ -869,8 +832,8 @@
       const item
       of moves
     ) {
-      if (outOfTime()) {
-        return 0;
+      if (checkTime()) {
+        return null;
       }
 
       const child =
@@ -880,486 +843,36 @@
         item.col
       );
 
-      const score =
-        -negamax(
+      const childScore =
+        exactNegamax(
           child,
-          depth - 1,
           -beta,
-          -alpha,
-          ply + 1
+          -alpha
         );
 
-      if (timedOut) {
-        return 0;
+      if (
+        childScore === null
+      ) {
+        return null;
       }
 
-      if (
-        score > best
-      ) {
+      const score =
+        -childScore;
+
+      if (score > best) {
         best = score;
       }
 
-      if (
-        score > alpha
-      ) {
+      if (score > alpha) {
         alpha = score;
       }
 
-      if (
-        alpha >= beta
-      ) {
+      if (alpha >= beta) {
         break;
       }
     }
 
     if (!timedOut) {
-      storeTT(
-        key,
-        best
-      );
-    }
-
-    return best;
-  }
-
-
-  // ============================================================
-  // AI SEARCH
-  // ============================================================
-
-  function searchBestMove(
-    timeLimit = 700
-  ) {
-    if (gameOver) {
-      return {
-        move: null,
-        depth: 0,
-        score: 0,
-        nodes: 0,
-        proven: false
-      };
-    }
-
-    resetSearchClock(
-      timeLimit
-    );
-
-    transposition.clear();
-
-    /*
-      Immediate win.
-    */
-
-    for (
-      const col
-      of CENTER_ORDER
-    ) {
-      if (
-        position.canPlay(col) &&
-        position.isWinningMove(col)
-      ) {
-        return {
-          move: col,
-          depth: 1,
-          score: WIN_SCORE,
-          nodes,
-          proven: true
-        };
-      }
-    }
-
-    const safeMoves =
-      orderedMoves(position);
-
-    if (
-      safeMoves.length === 0
-    ) {
-      /*
-        Forced loss.
-        Still return a legal move
-        so the game can continue.
-      */
-
-      const legal =
-        CENTER_ORDER.find(
-          col =>
-            position.canPlay(col)
-        );
-
-      return {
-        move:
-          legal === undefined
-            ? null
-            : legal,
-
-        depth: 0,
-        score: -WIN_SCORE,
-        nodes,
-        proven: true
-      };
-    }
-
-    let bestMove =
-      safeMoves[0].col;
-
-    let bestScore =
-      -INF;
-
-    let completedDepth = 0;
-
-    let proven = false;
-
-    const remaining =
-      MAX_MOVES -
-      position.moves;
-
-    for (
-      let depth = 1;
-      depth <= remaining;
-      depth++
-    ) {
-      if (
-        performance.now() >=
-        deadline
-      ) {
-        break;
-      }
-
-      timedOut = false;
-
-      let localMove =
-        bestMove;
-
-      let localScore =
-        -INF;
-
-      let alpha =
-        -INF;
-
-      const moves =
-        orderedMoves(position);
-
-      for (
-        const item
-        of moves
-      ) {
-        if (
-          performance.now() >=
-          deadline
-        ) {
-          timedOut = true;
-          break;
-        }
-
-        const child =
-          position.clone();
-
-        child.play(
-          item.col
-        );
-
-        const score =
-          -negamax(
-            child,
-            depth - 1,
-            -INF,
-            -alpha,
-            1
-          );
-
-        if (timedOut) {
-          break;
-        }
-
-        if (
-          score >
-          localScore
-        ) {
-          localScore =
-            score;
-
-          localMove =
-            item.col;
-        }
-
-        if (
-          score > alpha
-        ) {
-          alpha = score;
-        }
-      }
-
-      if (timedOut) {
-        break;
-      }
-
-      bestMove =
-        localMove;
-
-      bestScore =
-        localScore;
-
-      completedDepth =
-        depth;
-
-      /*
-        A terminal score was proven
-        inside the searched tree.
-      */
-
-      if (
-        Math.abs(bestScore) >=
-        WIN_SCORE -
-        MAX_MOVES
-      ) {
-        proven = true;
-        break;
-      }
-
-      /*
-        Full remaining tree searched.
-      */
-
-      if (
-        depth >= remaining
-      ) {
-        proven = true;
-        break;
-      }
-    }
-
-    return {
-      move: bestMove,
-      depth:
-        completedDepth,
-      score:
-        bestScore,
-      nodes,
-      proven
-    };
-  }
-
-
-  // ============================================================
-  // EXACT SOLVER
-  // ============================================================
-
-  function exactKey(pos) {
-    return pos.key();
-  }
-
-
-  function exactSolve(pos) {
-    if (
-      performance.now() >=
-      deadline
-    ) {
-      return {
-        type:
-          EXACT_UNKNOWN,
-        distance: null
-      };
-    }
-
-    nodes++;
-
-    if (
-      pos.moves >=
-      MAX_MOVES
-    ) {
-      return {
-        type:
-          EXACT_DRAW,
-        distance: 0
-      };
-    }
-
-    /*
-      Immediate win.
-    */
-
-    for (
-      const col
-      of CENTER_ORDER
-    ) {
-      if (
-        pos.canPlay(col) &&
-        pos.isWinningMove(col)
-      ) {
-        return {
-          type:
-            EXACT_WIN,
-          distance: 1
-        };
-      }
-    }
-
-    const key =
-      exactKey(pos);
-
-    const cached =
-      exactTable.get(key);
-
-    if (
-      cached !== undefined
-    ) {
-      return cached;
-    }
-
-    const moves =
-      orderedMoves(pos);
-
-    /*
-      No non-losing move means the
-      opponent has an unavoidable
-      immediate tactical win.
-    */
-
-    if (
-      moves.length === 0
-    ) {
-      return {
-        type:
-          EXACT_LOSS,
-        distance: 2
-      };
-    }
-
-    let shortestWin =
-      Infinity;
-
-    let longestLoss =
-      -1;
-
-    let hasDraw = false;
-    let hasUnknown = false;
-
-    for (
-      const item
-      of moves
-    ) {
-      if (
-        performance.now() >=
-        deadline
-      ) {
-        hasUnknown = true;
-        break;
-      }
-
-      const child =
-        pos.clone();
-
-      child.play(
-        item.col
-      );
-
-      const result =
-        exactSolve(child);
-
-      if (
-        result.type ===
-        EXACT_UNKNOWN
-      ) {
-        hasUnknown = true;
-        continue;
-      }
-
-      /*
-        Child is from opponent's
-        point of view.
-      */
-
-      if (
-        result.type ===
-        EXACT_LOSS
-      ) {
-        shortestWin =
-          Math.min(
-            shortestWin,
-            result.distance + 1
-          );
-      }
-
-      else if (
-        result.type ===
-        EXACT_DRAW
-      ) {
-        hasDraw = true;
-      }
-
-      else if (
-        result.type ===
-        EXACT_WIN
-      ) {
-        longestLoss =
-          Math.max(
-            longestLoss,
-            result.distance + 1
-          );
-      }
-    }
-
-    let result;
-
-    /*
-      One proven winning child is
-      enough to prove WIN even if
-      other branches timed out.
-    */
-
-    if (
-      shortestWin !==
-      Infinity
-    ) {
-      result = {
-        type:
-          EXACT_WIN,
-        distance:
-          shortestWin
-      };
-    }
-
-    /*
-      UNKNOWN must come before DRAW
-      or LOSS because unexplored
-      branches could contain a win.
-    */
-
-    else if (
-      hasUnknown
-    ) {
-      result = {
-        type:
-          EXACT_UNKNOWN,
-        distance: null
-      };
-    }
-
-    else if (
-      hasDraw
-    ) {
-      result = {
-        type:
-          EXACT_DRAW,
-        distance: 0
-      };
-    }
-
-    else {
-      result = {
-        type:
-          EXACT_LOSS,
-        distance:
-          longestLoss < 0
-            ? 0
-            : longestLoss
-      };
-    }
-
-    if (
-      result.type !==
-      EXACT_UNKNOWN
-    ) {
       if (
         exactTable.size >
         MAX_TT_SIZE
@@ -1367,15 +880,206 @@
         exactTable.clear();
       }
 
+      const old =
+        exactTable.get(key) || {};
+
+      /*
+        Store a bound rather than
+        pretending every cutoff
+        produced an exact score.
+      */
+
+      if (best <= originalAlpha) {
+        old.upper = best;
+      }
+
+      else if (
+        best >= originalBeta
+      ) {
+        old.lower = best;
+      }
+
+      else {
+        old.lower = best;
+        old.upper = best;
+      }
+
       exactTable.set(
         key,
-        result
+        old
       );
     }
 
-    return result;
+    return best;
   }
 
+  // ============================================================
+  // SCORE -> RESULT
+  // ============================================================
+
+  function scoreToResult(
+    score,
+    movesBeforeChoice
+  ) {
+    if (score === null) {
+      return {
+        type:
+          EXACT_UNKNOWN,
+        distance: null
+      };
+    }
+
+    if (score === 0) {
+      return {
+        type:
+          EXACT_DRAW,
+        distance: 0
+      };
+    }
+
+    /*
+      Convert the compact score
+      back to number of plies until
+      the game ends.
+
+      For a winning position:
+        score = floor(
+          (43 - movesAtPosition) / 2
+        )
+        adjusted by terminal depth.
+
+      We recover the terminal move
+      count from the score.
+    */
+
+    if (score > 0) {
+      const terminalMove =
+        MAX_MOVES +
+        1 -
+        2 * score;
+
+      return {
+        type:
+          EXACT_WIN,
+
+        distance:
+          Math.max(
+            1,
+            terminalMove -
+            movesBeforeChoice
+          )
+      };
+    }
+
+    const terminalMove =
+      MAX_MOVES +
+      2 * score;
+
+    return {
+      type:
+        EXACT_LOSS,
+
+      distance:
+        Math.max(
+          1,
+          terminalMove -
+          movesBeforeChoice
+        )
+    };
+  }
+
+  // ============================================================
+  // SOLVE ONE POSITION
+  // ============================================================
+
+  function solveExactScore(pos) {
+    /*
+      Null-window / binary score
+      search.
+
+      Instead of asking for the
+      exact score in one enormous
+      alpha-beta window, repeatedly
+      prove whether the value lies
+      above or below a bound.
+    */
+
+    let min =
+      -Math.floor(
+        (
+          MAX_MOVES -
+          pos.moves
+        ) / 2
+      );
+
+    let max =
+      Math.floor(
+        (
+          MAX_MOVES +
+          1 -
+          pos.moves
+        ) / 2
+      );
+
+    while (min < max) {
+      if (
+        performance.now() >=
+        deadline
+      ) {
+        timedOut = true;
+        return null;
+      }
+
+      let med =
+        min +
+        Math.floor(
+          (max - min) / 2
+        );
+
+      /*
+        Search values around zero
+        first. Draws are common and
+        this tends to reduce work.
+      */
+
+      if (
+        med <= 0 &&
+        Math.floor(min / 2) <
+          med
+      ) {
+        med =
+          Math.floor(min / 2);
+      }
+
+      else if (
+        med >= 0 &&
+        Math.floor(max / 2) >
+          med
+      ) {
+        med =
+          Math.floor(max / 2);
+      }
+
+      const result =
+        exactNegamax(
+          pos,
+          med,
+          med + 1
+        );
+
+      if (result === null) {
+        return null;
+      }
+
+      if (result <= med) {
+        max = result;
+      } else {
+        min = result;
+      }
+    }
+
+    return min;
+  }
 
   // ============================================================
   // COLUMN ANALYSIS
@@ -1395,33 +1099,29 @@
       timeLimit
     );
 
+    /*
+      Keep the table shared between
+      columns. Many subtrees overlap.
+    */
+
     exactTable.clear();
 
-    const legalColumns =
+    const legal =
       CENTER_ORDER.filter(
         col =>
           position.canPlay(col)
       );
-
-    /*
-      Give each column a fair
-      portion of the available
-      analysis time instead of
-      letting the first hard
-      column eat everything.
-    */
 
     const totalDeadline =
       deadline;
 
     for (
       let index = 0;
-      index <
-      legalColumns.length;
+      index < legal.length;
       index++
     ) {
       const col =
-        legalColumns[index];
+        legal[index];
 
       if (
         performance.now() >=
@@ -1431,9 +1131,8 @@
       }
 
       /*
-        Winning immediately is
-        already mathematically
-        proven.
+        Immediate win is already
+        mathematically proven.
       */
 
       if (
@@ -1454,8 +1153,9 @@
       child.play(col);
 
       /*
-        Divide remaining time
-        between remaining columns.
+        Give the current column a
+        fair share of the remaining
+        time.
       */
 
       const now =
@@ -1465,73 +1165,52 @@
         totalDeadline - now;
 
       const remainingColumns =
-        legalColumns.length -
-        index;
+        legal.length - index;
 
       deadline =
         now +
         Math.max(
-          20,
+          25,
           remainingTime /
           remainingColumns
         );
 
-      const childResult =
-        exactSolve(child);
+      timedOut = false;
+
+      const childScore =
+        solveExactScore(
+          child
+        );
 
       if (
-        childResult.type ===
-        EXACT_WIN
+        childScore === null
       ) {
-        results[col] = {
-          type:
-            EXACT_LOSS,
-          distance:
-            childResult.distance +
-            1
-        };
-      }
-
-      else if (
-        childResult.type ===
-        EXACT_LOSS
-      ) {
-        results[col] = {
-          type:
-            EXACT_WIN,
-          distance:
-            childResult.distance +
-            1
-        };
-      }
-
-      else if (
-        childResult.type ===
-        EXACT_DRAW
-      ) {
-        results[col] = {
-          type:
-            EXACT_DRAW,
-          distance: 0
-        };
-      }
-
-      else {
         results[col] = {
           type:
             EXACT_UNKNOWN,
           distance: null
         };
+      } else {
+        /*
+          childScore is from the
+          opponent's perspective.
+        */
+
+        const ourScore =
+          -childScore;
+
+        results[col] =
+          scoreToResult(
+            ourScore,
+            position.moves
+          );
       }
 
       deadline =
         totalDeadline;
-    }
 
-    /*
-      Anything legal but not solved
-      remains explicitly UNKNOWN.
-    */
+      timedOut = false;
+    }
 
     for (
       let col = 0;
@@ -1553,98 +1232,202 @@
     return results;
   }
 
-
   // ============================================================
-  // GRID HELPERS
+  // BEST MOVE SEARCH
   // ============================================================
 
-  function checkGridWin(
-    row,
-    col,
-    player
+  function searchBestMove(
+    timeLimit = 700
   ) {
-    const directions = [
-      [0, 1],
-      [1, 0],
-      [1, 1],
-      [1, -1]
-    ];
+    if (gameOver) {
+      return {
+        move: null,
+        depth: 0,
+        score: 0,
+        nodes: 0,
+        proven: false
+      };
+    }
+
+    resetSearchClock(
+      timeLimit
+    );
+
+    exactTable.clear();
+
+    /*
+      Never waste time searching
+      past an immediate win.
+    */
 
     for (
-      const [dr, dc]
-      of directions
+      const col
+      of CENTER_ORDER
     ) {
-      let count = 1;
-
-      count +=
-        countGridDirection(
-          row,
-          col,
-          dr,
-          dc,
-          player
-        );
-
-      count +=
-        countGridDirection(
-          row,
-          col,
-          -dr,
-          -dc,
-          player
-        );
-
-      if (count >= 4) {
-        return true;
+      if (
+        position.canPlay(col) &&
+        position.isWinningMove(col)
+      ) {
+        return {
+          move: col,
+          depth: 1,
+          score: 1,
+          nodes,
+          proven: true
+        };
       }
     }
 
-    return false;
-  }
+    const legal =
+      orderedMoves(position);
 
+    if (legal.length === 0) {
+      const fallback =
+        CENTER_ORDER.find(
+          col =>
+            position.canPlay(col)
+        );
 
-  function countGridDirection(
-    row,
-    col,
-    dr,
-    dc,
-    player
-  ) {
-    let count = 0;
-
-    let r = row + dr;
-    let c = col + dc;
-
-    while (
-      r >= 0 &&
-      r < HEIGHT &&
-      c >= 0 &&
-      c < WIDTH &&
-      grid[r][c] === player
-    ) {
-      count++;
-
-      r += dr;
-      c += dc;
+      return {
+        move:
+          fallback === undefined
+            ? null
+            : fallback,
+        depth: 0,
+        score: -1,
+        nodes,
+        proven: true
+      };
     }
 
-    return count;
+    let bestMove =
+      legal[0].col;
+
+    let bestScore =
+      -INF;
+
+    let proven = false;
+
+    /*
+      Try exact solving each move
+      while time remains.
+
+      If exact solving is not
+      completed, ordering still
+      gives a sensible fallback.
+    */
+
+    for (
+      const item
+      of legal
+    ) {
+      if (
+        performance.now() >=
+        deadline
+      ) {
+        break;
+      }
+
+      const child =
+        position.clone();
+
+      child.play(
+        item.col
+      );
+
+      const score =
+        solveExactScore(
+          child
+        );
+
+      if (score === null) {
+        break;
+      }
+
+      const ourScore =
+        -score;
+
+      if (
+        ourScore > bestScore
+      ) {
+        bestScore =
+          ourScore;
+
+        bestMove =
+          item.col;
+      }
+
+      proven = true;
+    }
+
+    return {
+      move:
+        bestMove,
+
+      depth:
+        proven
+          ? MAX_MOVES -
+            position.moves
+          : 0,
+
+      score:
+        bestScore === -INF
+          ? 0
+          : bestScore,
+
+      nodes,
+
+      proven
+    };
   }
 
+  // ============================================================
+  // PUBLIC POSITION SOLVER
+  // ============================================================
+
+  function solvePosition(
+    timeLimit = 3000
+  ) {
+    if (gameOver) {
+      if (winner === null) {
+        return {
+          type:
+            EXACT_DRAW,
+          distance: 0
+        };
+      }
+
+      return {
+        type:
+          EXACT_UNKNOWN,
+        distance: null
+      };
+    }
+
+    resetSearchClock(
+      timeLimit
+    );
+
+    exactTable.clear();
+
+    const score =
+      solveExactScore(
+        position.clone()
+      );
+
+    return scoreToResult(
+      score,
+      position.moves
+    );
+  }
 
   // ============================================================
-  // REBUILD BITBOARD
+  // REBUILD POSITION
   // ============================================================
 
   function rebuildPosition() {
     position =
       new Position();
-
-    /*
-      History is chronological, so
-      replaying it recreates exactly
-      the same bitboard state.
-    */
 
     for (
       const move
@@ -1655,7 +1438,6 @@
       );
     }
   }
-
 
   // ============================================================
   // PLAY
@@ -1676,11 +1458,6 @@
 
     const player =
       currentPlayer;
-
-    /*
-      Check with bitboard before
-      switching the side to move.
-    */
 
     const winningMove =
       position.isWinningMove(col);
@@ -1729,7 +1506,6 @@
     };
   }
 
-
   // ============================================================
   // UNDO
   // ============================================================
@@ -1767,7 +1543,6 @@
     return move;
   }
 
-
   // ============================================================
   // REDO
   // ============================================================
@@ -1781,13 +1556,6 @@
 
     const move =
       redoStack.pop();
-
-    /*
-      A redo should not erase the
-      remaining redo stack, so we
-      perform it manually rather
-      than calling play().
-    */
 
     const row =
       heights[
@@ -1856,7 +1624,6 @@
     };
   }
 
-
   // ============================================================
   // RESET
   // ============================================================
@@ -1885,10 +1652,8 @@
     gameOver = false;
     winner = null;
 
-    transposition.clear();
     exactTable.clear();
   }
-
 
   // ============================================================
   // STATE
@@ -1928,7 +1693,6 @@
     };
   }
 
-
   // ============================================================
   // LEGAL MOVES
   // ============================================================
@@ -1940,67 +1704,25 @@
     );
   }
 
-
   // ============================================================
-  // PUBLIC EXACT RESULT
-  // ============================================================
-
-  function solvePosition(
-    timeLimit = 3000
-  ) {
-    if (gameOver) {
-      if (winner === null) {
-        return {
-          type:
-            EXACT_DRAW,
-          distance: 0
-        };
-      }
-
-      /*
-        Game is already over.
-        There is no next-player
-        decision to solve.
-      */
-
-      return {
-        type:
-          EXACT_UNKNOWN,
-        distance: null
-      };
-    }
-
-    resetSearchClock(
-      timeLimit
-    );
-
-    exactTable.clear();
-
-    return exactSolve(
-      position.clone()
-    );
-  }
-
-
-  // ============================================================
-  // DEBUG CONSISTENCY CHECK
+  // VALIDATE
   // ============================================================
 
   function validate() {
     let occupied = 0;
 
     for (
-      let r = 0;
-      r < HEIGHT;
-      r++
+      let row = 0;
+      row < HEIGHT;
+      row++
     ) {
       for (
-        let c = 0;
-        c < WIDTH;
-        c++
+        let col = 0;
+        col < WIDTH;
+        col++
       ) {
         if (
-          grid[r][c] !== null
+          grid[row][col] !== null
         ) {
           occupied++;
         }
@@ -2014,7 +1736,6 @@
         history.length
     );
   }
-
 
   // ============================================================
   // PUBLIC API
