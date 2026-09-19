@@ -1,10 +1,44 @@
+/*
+  ============================================================
+  CONNECT 4 ENGINE · v1.5
+  ============================================================
+
+  Board: 7 × 6
+  Goal: Connect 4
+
+  Features:
+  - BigInt bitboards
+  - Gravity
+  - Fast win detection
+  - Immediate win / forced block detection
+  - Non-losing move pruning
+  - Center + threat move ordering
+  - Bound-aware Negamax + Alpha-Beta
+  - Iterative deepening
+  - Fixed-size exact transposition table
+  - Incremental exact W / D / L analysis
+  - Symmetry reuse
+  - Verified opening reference data
+  - Undo / Redo
+  - AI vs Human
+  - AI vs AI
+
+  Public API:
+  window.Connect4Engine
+*/
+
 (() => {
   "use strict";
+
+  // ============================================================
+  // CONSTANTS
+  // ============================================================
 
   const WIDTH = 7;
   const HEIGHT = 6;
   const STRIDE = HEIGHT + 1;
   const MAX_MOVES = WIDTH * HEIGHT;
+
   const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6];
 
   const EXACT_WIN = "WIN";
@@ -15,8 +49,13 @@
   const AI_WIN_SCORE = 1000000;
   const AI_INF = 2000000000;
 
+  const TT_EXACT = 0;
+  const TT_LOWER = 1;
+  const TT_UPPER = 2;
+
   const MIN_SCORE = -18;
   const MAX_SCORE = 18;
+
   const LOWER_BOUND_MARK =
     MAX_SCORE - MIN_SCORE + 1;
 
@@ -32,6 +71,7 @@
   let BOARD_MASK = 0n;
   let BOTTOM_MASK_ALL = 0n;
 
+
   for (
     let col = 0;
     col < WIDTH;
@@ -42,18 +82,23 @@
         col * STRIDE
       );
 
+
     BOTTOM_MASKS[col] =
       1n << shift;
+
 
     COLUMN_MASKS[col] =
       (
         (
           1n <<
-          BigInt(HEIGHT)
+          BigInt(
+            HEIGHT
+          )
         ) -
         1n
       ) <<
       shift;
+
 
     TOP_MASKS[col] =
       1n <<
@@ -63,8 +108,10 @@
         1
       );
 
+
     BOARD_MASK |=
       COLUMN_MASKS[col];
+
 
     BOTTOM_MASK_ALL |=
       BOTTOM_MASKS[col];
@@ -75,8 +122,11 @@
   // BIT HELPERS
   // ============================================================
 
-  function popcount(value) {
+  function popcount(
+    value
+  ) {
     let count = 0;
+
 
     while (
       value !== 0n
@@ -84,14 +134,18 @@
       value &=
         value - 1n;
 
+
       count++;
     }
+
 
     return count;
   }
 
 
-  function hasAlignment(bits) {
+  function hasAlignment(
+    bits
+  ) {
     let m;
 
 
@@ -103,6 +157,7 @@
         bits >>
         1n
       );
+
 
     if (
       (
@@ -127,6 +182,7 @@
           STRIDE
         )
       );
+
 
     if (
       (
@@ -155,6 +211,7 @@
         )
       );
 
+
     if (
       (
         m &
@@ -173,15 +230,19 @@
 
     // Diagonal \
 
+    const diagonal =
+      HEIGHT + 2;
+
+
     m =
       bits &
       (
         bits >>
         BigInt(
-          HEIGHT +
-          2
+          diagonal
         )
       );
+
 
     return (
       (
@@ -190,10 +251,7 @@
           m >>
           BigInt(
             2 *
-            (
-              HEIGHT +
-              2
-            )
+            diagonal
           )
         )
       ) !== 0n
@@ -243,6 +301,7 @@
         )
       );
 
+
     result |=
       p &
       (
@@ -253,6 +312,7 @@
         )
       );
 
+
     result |=
       p &
       (
@@ -261,6 +321,7 @@
           STRIDE
         )
       );
+
 
     p =
       (
@@ -277,6 +338,7 @@
         )
       );
 
+
     result |=
       p &
       (
@@ -285,6 +347,7 @@
           STRIDE
         )
       );
+
 
     result |=
       p &
@@ -314,6 +377,7 @@
         )
       );
 
+
     result |=
       p &
       (
@@ -324,6 +388,7 @@
         )
       );
 
+
     result |=
       p &
       (
@@ -332,6 +397,7 @@
           HEIGHT
         )
       );
+
 
     p =
       (
@@ -348,6 +414,7 @@
         )
       );
 
+
     result |=
       p &
       (
@@ -356,6 +423,7 @@
           HEIGHT
         )
       );
+
 
     result |=
       p &
@@ -373,6 +441,7 @@
     const diagonal =
       HEIGHT + 2;
 
+
     p =
       (
         current <<
@@ -387,6 +456,7 @@
           diagonal
         )
       );
+
 
     result |=
       p &
@@ -398,6 +468,7 @@
         )
       );
 
+
     result |=
       p &
       (
@@ -406,6 +477,7 @@
           diagonal
         )
       );
+
 
     p =
       (
@@ -422,6 +494,7 @@
         )
       );
 
+
     result |=
       p &
       (
@@ -430,6 +503,7 @@
           diagonal
         )
       );
+
 
     result |=
       p &
@@ -452,7 +526,9 @@
   }
 
 
-  function possibleRaw(mask) {
+  function possibleRaw(
+    mask
+  ) {
     return (
       (
         mask +
@@ -500,18 +576,36 @@
           current,
           mask
         ) &
-        possibleRaw(mask)
+        possibleRaw(
+          mask
+        )
       ) !== 0n
     );
   }
 
+
+  /*
+    Standard Connect 4 pruning.
+
+    - Two immediate opponent wins:
+      forced loss.
+
+    - One immediate opponent win:
+      forced block.
+
+    - Do not play below an opponent
+      winning square.
+  */
 
   function nonLosingMovesRaw(
     current,
     mask
   ) {
     let possible =
-      possibleRaw(mask);
+      possibleRaw(
+        mask
+      );
+
 
     const opponentWin =
       winningPosition(
@@ -519,6 +613,7 @@
         current,
         mask
       );
+
 
     const forced =
       possible &
@@ -540,6 +635,7 @@
         return 0n;
       }
 
+
       possible =
         forced;
     }
@@ -560,6 +656,7 @@
   // ============================================================
 
   class Position {
+
     constructor(
       current = 0n,
       mask = 0n,
@@ -568,8 +665,10 @@
       this.current =
         current;
 
+
       this.mask =
         mask;
+
 
       this.moves =
         moves;
@@ -585,7 +684,9 @@
     }
 
 
-    canPlay(col) {
+    canPlay(
+      col
+    ) {
       return canPlayRaw(
         this.mask,
         col
@@ -593,7 +694,9 @@
     }
 
 
-    moveBit(col) {
+    moveBit(
+      col
+    ) {
       return moveBitRaw(
         this.mask,
         col
@@ -601,29 +704,48 @@
     }
 
 
-    isWinningMove(col) {
+    isWinningMove(
+      col
+    ) {
       if (
-        !this.canPlay(col)
+        !this.canPlay(
+          col
+        )
       ) {
         return false;
       }
 
+
       return hasAlignment(
         this.current |
-        this.moveBit(col)
+        this.moveBit(
+          col
+        )
       );
     }
 
 
-    play(col) {
+    play(
+      col
+    ) {
       const move =
-        this.moveBit(col);
+        this.moveBit(
+          col
+        );
+
+
+      /*
+        Switch point of view
+        to the next player.
+      */
 
       this.current ^=
         this.mask;
 
+
       this.mask |=
         move;
+
 
       this.moves++;
     }
@@ -639,8 +761,17 @@
 
 
   // ============================================================
-  // VERIFIED OPENING DATA
+  // VERIFIED OPENING REFERENCE
   // ============================================================
+
+  /*
+    These three positions were
+    verified against the reference
+    perfect solver.
+
+    Outside them, the engine uses
+    its own exact search.
+  */
 
   const openingBook =
     new Map();
@@ -650,14 +781,15 @@
     sequence,
     values
   ) {
-    const p =
+    const pos =
       new Position();
+
 
     for (
       const oneBasedColumn
       of sequence
     ) {
-      p.play(
+      pos.play(
         oneBasedColumn -
         1
       );
@@ -665,7 +797,9 @@
 
 
     openingBook.set(
-      p.key().toString(),
+      pos
+        .key()
+        .toString(),
 
       values.map(
         value =>
@@ -683,53 +817,64 @@
   }
 
 
+  // Empty board
+
   addOpeningEntry(
     [],
     [
       {
         type:
           EXACT_LOSS,
-        distance: 39
+        distance:
+          39
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 41
+        distance:
+          41
       },
 
       {
         type:
           EXACT_DRAW,
-        distance: 0
+        distance:
+          0
       },
 
       {
         type:
           EXACT_WIN,
-        distance: 40
+        distance:
+          40
       },
 
       {
         type:
           EXACT_DRAW,
-        distance: 0
+        distance:
+          0
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 41
+        distance:
+          41
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 39
+        distance:
+          39
       }
     ]
   );
 
+
+  // A4
 
   addOpeningEntry(
     [4],
@@ -737,47 +882,56 @@
       {
         type:
           EXACT_LOSS,
-        distance: 33
+        distance:
+          33
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 37
+        distance:
+          37
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 37
+        distance:
+          37
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 39
+        distance:
+          39
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 37
+        distance:
+          37
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 37
+        distance:
+          37
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 33
+        distance:
+          33
       }
     ]
   );
 
+
+  // A4 B4
 
   addOpeningEntry(
     [4, 4],
@@ -785,43 +939,50 @@
       {
         type:
           EXACT_LOSS,
-        distance: 35
+        distance:
+          35
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 35
+        distance:
+          35
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 37
+        distance:
+          37
       },
 
       {
         type:
           EXACT_WIN,
-        distance: 38
+        distance:
+          38
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 37
+        distance:
+          37
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 35
+        distance:
+          35
       },
 
       {
         type:
           EXACT_LOSS,
-        distance: 35
+        distance:
+          35
       }
     ]
   );
@@ -832,11 +993,15 @@
   ) {
     const found =
       openingBook.get(
-        pos.key().toString()
+        pos
+          .key()
+          .toString()
       );
 
 
-    if (!found) {
+    if (
+      !found
+    ) {
       return null;
     }
 
@@ -889,8 +1054,12 @@
     "A";
 
 
-  let history = [];
-  let redoStack = [];
+  let history =
+    [];
+
+
+  let redoStack =
+    [];
 
 
   let gameOver =
@@ -905,9 +1074,16 @@
   // SEARCH CLOCK
   // ============================================================
 
-  let deadline = 0;
-  let nodes = 0;
-  let timedOut = false;
+  let deadline =
+    0;
+
+
+  let nodes =
+    0;
+
+
+  let timedOut =
+    false;
 
 
   function resetSearchClock(
@@ -920,8 +1096,13 @@
         ms
       );
 
-    nodes = 0;
-    timedOut = false;
+
+    nodes =
+      0;
+
+
+    timedOut =
+      false;
   }
 
 
@@ -932,7 +1113,7 @@
     if (
       (
         nodes &
-        4095
+        2047
       ) !== 0
     ) {
       return false;
@@ -946,6 +1127,7 @@
       timedOut =
         true;
 
+
       return true;
     }
 
@@ -955,93 +1137,7 @@
 
 
   // ============================================================
-  // EXACT TRANSPOSITION TABLE
-  // ============================================================
-
-  const TT_BITS =
-    21;
-
-  const TT_SIZE =
-    1 <<
-    TT_BITS;
-
-  const TT_MASK =
-    BigInt(
-      TT_SIZE -
-      1
-    );
-
-
-  const ttKeys =
-    new BigUint64Array(
-      TT_SIZE
-    );
-
-
-  const ttValues =
-    new Uint8Array(
-      TT_SIZE
-    );
-
-
-  function ttIndex(key) {
-    const folded =
-      key ^
-      (
-        key >>
-        21n
-      ) ^
-      (
-        key >>
-        42n
-      );
-
-
-    return Number(
-      folded &
-      TT_MASK
-    );
-  }
-
-
-  function ttGet(key) {
-    const index =
-      ttIndex(key);
-
-    const value =
-      ttValues[index];
-
-
-    if (
-      value === 0 ||
-      ttKeys[index] !==
-        key
-    ) {
-      return 0;
-    }
-
-
-    return value;
-  }
-
-
-  function ttPut(
-    key,
-    value
-  ) {
-    const index =
-      ttIndex(key);
-
-    ttKeys[index] =
-      key;
-
-    ttValues[index] =
-      value;
-  }
-
-
-  // ============================================================
-  // MOVE ORDERING
+  // MOVE ORDERING BUFFERS
   // ============================================================
 
   const MOVE_COLS =
@@ -1068,7 +1164,7 @@
       },
 
       () =>
-        new Int8Array(
+        new Int16Array(
           WIDTH
         )
     );
@@ -1078,17 +1174,20 @@
     current,
     mask,
     moveCount,
-    possible
+    possible,
+    preferred = -1
   ) {
     const cols =
       MOVE_COLS[
         moveCount
       ];
 
+
     const scores =
       MOVE_SCORES[
         moveCount
       ];
+
 
     let size =
       0;
@@ -1115,14 +1214,32 @@
       }
 
 
-      const score =
+      let score =
         popcount(
           winningPosition(
             current |
             move,
             mask
           )
+        ) *
+        100;
+
+
+      score +=
+        10 -
+        Math.abs(
+          3 -
+          col
         );
+
+
+      if (
+        col ===
+        preferred
+      ) {
+        score +=
+          10000;
+      }
 
 
       let index =
@@ -1130,12 +1247,13 @@
 
 
       while (
-        index > 0 &&
+        index >
+        0 &&
         scores[
           index -
           1
         ] <
-          score
+        score
       ) {
         scores[index] =
           scores[
@@ -1143,11 +1261,13 @@
             1
           ];
 
+
         cols[index] =
           cols[
             index -
             1
           ];
+
 
         index--;
       }
@@ -1156,8 +1276,10 @@
       scores[index] =
         score;
 
+
       cols[index] =
         col;
+
 
       size++;
     }
@@ -1168,8 +1290,131 @@
 
 
   // ============================================================
+  // EXACT TRANSPOSITION TABLE
+  // ============================================================
+
+  const EXACT_TT_BITS =
+    21;
+
+
+  const EXACT_TT_SIZE =
+    1 <<
+    EXACT_TT_BITS;
+
+
+  const EXACT_TT_MASK =
+    BigInt(
+      EXACT_TT_SIZE -
+      1
+    );
+
+
+  const exactKeys =
+    new BigUint64Array(
+      EXACT_TT_SIZE
+    );
+
+
+  const exactValues =
+    new Uint8Array(
+      EXACT_TT_SIZE
+    );
+
+
+  function exactIndex(
+    key
+  ) {
+    const folded =
+      key ^
+
+      (
+        key >>
+        21n
+      ) ^
+
+      (
+        key >>
+        42n
+      );
+
+
+    return Number(
+      folded &
+      EXACT_TT_MASK
+    );
+  }
+
+
+  function exactGet(
+    key
+  ) {
+    const index =
+      exactIndex(
+        key
+      );
+
+
+    const value =
+      exactValues[
+        index
+      ];
+
+
+    if (
+      value === 0 ||
+
+      exactKeys[
+        index
+      ] !==
+        key
+    ) {
+      return 0;
+    }
+
+
+    return value;
+  }
+
+
+  function exactPut(
+    key,
+    value
+  ) {
+    const index =
+      exactIndex(
+        key
+      );
+
+
+    exactKeys[
+      index
+    ] =
+      key;
+
+
+    exactValues[
+      index
+    ] =
+      value;
+  }
+
+
+  // ============================================================
   // EXACT NEGAMAX
   // ============================================================
+
+  /*
+    Standard strong Connect 4
+    solver invariant:
+
+    exactNegamax enters only when
+    current player has no immediate
+    winning move.
+
+    createExactJob checks roots,
+    and nonLosingMovesRaw preserves
+    this through recursion.
+  */
 
   function exactNegamaxRaw(
     current,
@@ -1193,7 +1438,8 @@
 
 
     if (
-      possible === 0n
+      possible ===
+      0n
     ) {
       return -Math.trunc(
         (
@@ -1232,6 +1478,7 @@
       alpha =
         min;
 
+
       if (
         alpha >=
         beta
@@ -1259,6 +1506,7 @@
       beta =
         max;
 
+
       if (
         alpha >=
         beta
@@ -1274,14 +1522,19 @@
 
 
     const cached =
-      ttGet(
+      exactGet(
         key
       );
 
 
     if (
-      cached !== 0
+      cached !==
+      0
     ) {
+      /*
+        Lower bound.
+      */
+
       if (
         cached >
         LOWER_BOUND_MARK
@@ -1301,6 +1554,7 @@
           alpha =
             min;
 
+
           if (
             alpha >=
             beta
@@ -1309,6 +1563,11 @@
           }
         }
       }
+
+
+      /*
+        Upper bound.
+      */
 
       else {
         max =
@@ -1323,6 +1582,7 @@
         ) {
           beta =
             max;
+
 
           if (
             alpha >=
@@ -1362,7 +1622,9 @@
       index++
     ) {
       const col =
-        cols[index];
+        cols[
+          index
+        ];
 
 
       const move =
@@ -1404,7 +1666,7 @@
         score >=
         beta
       ) {
-        ttPut(
+        exactPut(
           key,
 
           score +
@@ -1429,7 +1691,7 @@
     }
 
 
-    ttPut(
+    exactPut(
       key,
 
       alpha -
@@ -1443,8 +1705,22 @@
 
 
   // ============================================================
-  // INCREMENTAL EXACT JOBS
+  // EXACT JOBS
   // ============================================================
+
+  function immediateWinScore(
+    moveCount
+  ) {
+    return Math.trunc(
+      (
+        MAX_MOVES +
+        1 -
+        moveCount
+      ) /
+      2
+    );
+  }
+
 
   function chooseMedian(
     min,
@@ -1462,12 +1738,13 @@
 
 
     if (
-      med <= 0 &&
+      med <=
+      0 &&
       Math.trunc(
         min /
         2
       ) <
-        med
+      med
     ) {
       med =
         Math.trunc(
@@ -1476,13 +1753,15 @@
         );
     }
 
+
     else if (
-      med >= 0 &&
+      med >=
+      0 &&
       Math.trunc(
         max /
         2
       ) >
-        med
+      med
     ) {
       med =
         Math.trunc(
@@ -1515,24 +1794,30 @@
         phase:
           "done",
 
-        min: 0,
-        max: 0,
+        min:
+          0,
+
+        max:
+          0,
 
         done:
           true,
 
         score:
-          Math.trunc(
-            (
-              MAX_MOVES +
-              1 -
-              moveCount
-            ) /
-            2
+          immediateWinScore(
+            moveCount
           )
       };
     }
 
+
+    /*
+      Weak solve first:
+      only determine W / D / L.
+
+      Then continue to strong score
+      for the distance.
+    */
 
     return {
       current,
@@ -1542,8 +1827,11 @@
       phase:
         "weak",
 
-      min: -1,
-      max: 1,
+      min:
+        -1,
+
+      max:
+        1,
 
       done:
         false,
@@ -1568,6 +1856,7 @@
     deadline =
       sliceDeadline;
 
+
     timedOut =
       false;
 
@@ -1589,16 +1878,20 @@
           "weak"
         ) {
           if (
-            value === 0
+            value ===
+            0
           ) {
             job.phase =
               "done";
 
+
             job.done =
               true;
 
+
             job.score =
               0;
+
 
             return true;
           }
@@ -1609,10 +1902,12 @@
 
 
           if (
-            value > 0
+            value >
+            0
           ) {
             job.min =
               1;
+
 
             job.max =
               Math.trunc(
@@ -1625,6 +1920,7 @@
               );
           }
 
+
           else {
             job.min =
               -Math.trunc(
@@ -1634,6 +1930,7 @@
                 ) /
                 2
               );
+
 
             job.max =
               -1;
@@ -1647,11 +1944,14 @@
         job.phase =
           "done";
 
+
         job.done =
           true;
 
+
         job.score =
           value;
+
 
         return true;
       }
@@ -1670,7 +1970,8 @@
           job.mask,
           job.moveCount,
           med,
-          med + 1
+          med +
+          1
         );
 
 
@@ -1689,6 +1990,7 @@
         job.max =
           result;
       }
+
 
       else {
         job.min =
@@ -1727,7 +2029,7 @@
     while (
       !job.done &&
       performance.now() <
-        end
+      end
     ) {
       advanceExactJob(
         job,
@@ -1751,14 +2053,20 @@
     score
   ) {
     if (
-      score === 0
+      score ===
+      0
     ) {
       return 0;
     }
 
 
+    /*
+      Current player wins.
+    */
+
     if (
-      score > 0
+      score >
+      0
     ) {
       const maxWin =
         Math.trunc(
@@ -1781,6 +2089,10 @@
       );
     }
 
+
+    /*
+      Current player loses.
+    */
 
     const maxLoss =
       Math.trunc(
@@ -1837,7 +2149,8 @@
 
     return {
       type:
-        score > 0
+        score >
+        0
           ? EXACT_WIN
           : EXACT_LOSS,
 
@@ -1849,6 +2162,14 @@
     };
   }
 
+
+  /*
+    For column analysis,
+    distance begins AFTER the
+    candidate move.
+
+    Empty board center = W40.
+  */
 
   function resultFromChildScore(
     childMoveCount,
@@ -1884,7 +2205,8 @@
 
     return {
       type:
-        childScore < 0
+        childScore <
+        0
           ? EXACT_WIN
           : EXACT_LOSS,
 
@@ -1901,7 +2223,9 @@
   // SYMMETRY
   // ============================================================
 
-  function mirrorBits(bits) {
+  function mirrorBits(
+    bits
+  ) {
     let mirrored =
       0n;
 
@@ -1967,11 +2291,12 @@
 
 
   // ============================================================
-  // ANALYSIS PROGRESS
+  // INCREMENTAL COLUMN ANALYSIS
   // ============================================================
 
   let analysisProgressKey =
     null;
+
 
   let analysisProgress =
     null;
@@ -1980,6 +2305,7 @@
   function clearAnalysisProgress() {
     analysisProgressKey =
       null;
+
 
     analysisProgress =
       null;
@@ -2016,18 +2342,24 @@
       columns =
         columns.filter(
           col =>
-            col <= 3
+            col <=
+            3
         );
     }
 
 
-    const jobs = [];
+    const jobs =
+      [];
 
 
     for (
       const col
       of columns
     ) {
+      /*
+        Immediate win.
+      */
+
       if (
         position.isWinningMove(
           col
@@ -2057,12 +2389,14 @@
 
           if (
             mirror !==
-              col &&
+            col &&
             position.canPlay(
               mirror
             )
           ) {
-            results[mirror] = {
+            results[
+              mirror
+            ] = {
               ...result
             };
           }
@@ -2095,7 +2429,7 @@
         1;
 
 
-      const exactJob =
+      const job =
         createExactJob(
           childCurrent,
           childMask,
@@ -2112,12 +2446,12 @@
 
 
       if (
-        exactJob.done
+        job.done
       ) {
         const result =
           resultFromChildScore(
-            exactJob.moveCount,
-            exactJob.score
+            job.moveCount,
+            job.score
           );
 
 
@@ -2134,18 +2468,20 @@
             mirror
           )
         ) {
-          results[mirror] = {
+          results[
+            mirror
+          ] = {
             ...result
           };
         }
       }
 
+
       else {
         jobs.push({
           col,
           mirror,
-          job:
-            exactJob
+          job
         });
       }
     }
@@ -2158,13 +2494,14 @@
           .toString(),
 
       results,
+
       jobs,
 
       cursor:
         0,
 
       sliceMs:
-        35
+        30
     };
   }
 
@@ -2222,6 +2559,10 @@
     }
 
 
+    /*
+      Exact verified early data.
+    */
+
     const opening =
       getOpeningAnalysis(
         position
@@ -2249,6 +2590,7 @@
       analysisProgressKey =
         key;
 
+
       analysisProgress =
         createAnalysisProgress();
     }
@@ -2266,23 +2608,36 @@
       );
 
 
-    nodes = 0;
-    timedOut = false;
+    nodes =
+      0;
+
+
+    timedOut =
+      false;
 
 
     while (
       performance.now() <
       totalDeadline
     ) {
-      const unresolved =
-        progress.jobs.filter(
-          item =>
-            !item.job.done
-        );
+      let unresolved =
+        0;
+
+
+      for (
+        const item
+        of progress.jobs
+      ) {
+        if (
+          !item.job.done
+        ) {
+          unresolved++;
+        }
+      }
 
 
       if (
-        unresolved.length ===
+        unresolved ===
         0
       ) {
         break;
@@ -2294,8 +2649,11 @@
 
 
       const startCursor =
-        progress.cursor %
-        progress.jobs.length;
+        progress.jobs.length ===
+        0
+          ? 0
+          : progress.cursor %
+            progress.jobs.length;
 
 
       for (
@@ -2380,7 +2738,8 @@
 
 
       if (
-        touched === 0
+        touched ===
+        0
       ) {
         break;
       }
@@ -2390,8 +2749,7 @@
         Math.min(
           progress.sliceMs *
           2,
-
-          700
+          650
         );
     }
 
@@ -2406,6 +2764,11 @@
             : null
       );
 
+
+    /*
+      Legal unresolved columns
+      remain explicitly UNKNOWN.
+    */
 
     for (
       let col = 0;
@@ -2477,11 +2840,9 @@
       );
 
 
-    return (
-      resultFromCurrentScore(
-        position.moves,
-        score
-      )
+    return resultFromCurrentScore(
+      position.moves,
+      score
     );
   }
 
@@ -2490,12 +2851,12 @@
   // HEURISTIC AI
   // ============================================================
 
-  const heuristicTT =
+  const aiTable =
     new Map();
 
 
-  const HEURISTIC_TT_LIMIT =
-    120000;
+  const AI_TT_LIMIT =
+    140000;
 
 
   function heuristic(
@@ -2511,25 +2872,37 @@
       0;
 
 
+    const myWins =
+      winningPosition(
+        current,
+        mask
+      );
+
+
+    const enemyWins =
+      winningPosition(
+        opponent,
+        mask
+      );
+
+
     score +=
       popcount(
-        winningPosition(
-          current,
-          mask
-        )
+        myWins
       ) *
-      500;
+      520;
 
 
     score -=
       popcount(
-        winningPosition(
-          opponent,
-          mask
-        )
+        enemyWins
       ) *
-      650;
+      700;
 
+
+    /*
+      Center column.
+    */
 
     const center =
       COLUMN_MASKS[3];
@@ -2540,7 +2913,7 @@
         current &
         center
       ) *
-      8;
+      10;
 
 
     score -=
@@ -2548,94 +2921,16 @@
         opponent &
         center
       ) *
-      8;
+      10;
 
 
     return score;
   }
 
 
-  function aiOrderedColumns(
-    current,
-    mask
-  ) {
-    const possible =
-      nonLosingMovesRaw(
-        current,
-        mask
-      );
-
-
-    if (
-      possible === 0n
-    ) {
-      return [];
-    }
-
-
-    const items = [];
-
-
-    for (
-      const col
-      of CENTER_ORDER
-    ) {
-      const move =
-        moveBitRaw(
-          mask,
-          col
-        );
-
-
-      if (
-        (
-          possible &
-          move
-        ) === 0n
-      ) {
-        continue;
-      }
-
-
-      items.push({
-        col,
-
-        score:
-          popcount(
-            winningPosition(
-              current |
-              move,
-              mask
-            )
-          ) *
-          1000 +
-
-          20 -
-
-          Math.abs(
-            3 -
-            col
-          )
-      });
-    }
-
-
-    items.sort(
-      (
-        a,
-        b
-      ) =>
-        b.score -
-        a.score
-    );
-
-
-    return items.map(
-      item =>
-        item.col
-    );
-  }
-
+  // ============================================================
+  // AI NEGAMAX
+  // ============================================================
 
   function aiNegamax(
     current,
@@ -2682,7 +2977,8 @@
 
 
     if (
-      possible === 0n
+      possible ===
+      0n
     ) {
       return (
         -AI_WIN_SCORE +
@@ -2692,7 +2988,8 @@
 
 
     if (
-      depth <= 0
+      depth <=
+      0
     ) {
       return heuristic(
         current,
@@ -2702,33 +2999,92 @@
 
 
     const key =
-      (
-        current +
-        mask
-      ).toString() +
-      ":" +
-      depth;
+      current +
+      mask;
+
+
+    const originalAlpha =
+      alpha;
+
+
+    const originalBeta =
+      beta;
+
+
+    let preferred =
+      -1;
 
 
     const cached =
-      heuristicTT.get(
+      aiTable.get(
         key
       );
 
 
     if (
-      cached !==
-      undefined
+      cached &&
+      cached.depth >=
+        depth
     ) {
-      return cached;
+      preferred =
+        cached.bestMove;
+
+
+      if (
+        cached.flag ===
+        TT_EXACT
+      ) {
+        return cached.value;
+      }
+
+
+      if (
+        cached.flag ===
+        TT_LOWER
+      ) {
+        alpha =
+          Math.max(
+            alpha,
+            cached.value
+          );
+      }
+
+
+      else if (
+        cached.flag ===
+        TT_UPPER
+      ) {
+        beta =
+          Math.min(
+            beta,
+            cached.value
+          );
+      }
+
+
+      if (
+        alpha >=
+        beta
+      ) {
+        return cached.value;
+      }
     }
 
 
-    const cols =
-      aiOrderedColumns(
+    const total =
+      buildOrderedMoves(
         current,
-        mask
+        mask,
+        moveCount,
+        possible,
+        preferred
       );
+
+
+    const cols =
+      MOVE_COLS[
+        moveCount
+      ];
 
 
     const nextCurrent =
@@ -2740,10 +3096,22 @@
       -AI_INF;
 
 
+    let bestMove =
+      cols[0];
+
+
     for (
-      const col
-      of cols
+      let index = 0;
+      index <
+      total;
+      index++
     ) {
+      const col =
+        cols[
+          index
+        ];
+
+
       const move =
         moveBitRaw(
           mask,
@@ -2791,6 +3159,10 @@
       ) {
         best =
           score;
+
+
+        bestMove =
+          col;
       }
 
 
@@ -2812,17 +3184,45 @@
     }
 
 
+    let flag =
+      TT_EXACT;
+
+
     if (
-      heuristicTT.size >=
-      HEURISTIC_TT_LIMIT
+      best <=
+      originalAlpha
     ) {
-      heuristicTT.clear();
+      flag =
+        TT_UPPER;
     }
 
 
-    heuristicTT.set(
+    else if (
+      best >=
+      originalBeta
+    ) {
+      flag =
+        TT_LOWER;
+    }
+
+
+    if (
+      aiTable.size >=
+      AI_TT_LIMIT
+    ) {
+      aiTable.clear();
+    }
+
+
+    aiTable.set(
       key,
-      best
+      {
+        depth,
+        value:
+          best,
+        flag,
+        bestMove
+      }
     );
 
 
@@ -2837,9 +3237,16 @@
   function chooseBookMove(
     values
   ) {
-    const wins = [];
-    const draws = [];
-    const losses = [];
+    const wins =
+      [];
+
+
+    const draws =
+      [];
+
+
+    const losses =
+      [];
 
 
     for (
@@ -2848,7 +3255,9 @@
       col++
     ) {
       const value =
-        values[col];
+        values[
+          col
+        ];
 
 
       if (
@@ -2898,6 +3307,10 @@
     }
 
 
+    /*
+      Fastest forced win.
+    */
+
     if (
       wins.length
     ) {
@@ -2920,6 +3333,10 @@
       };
     }
 
+
+    /*
+      Draw if no win exists.
+    */
 
     if (
       draws.length
@@ -2949,6 +3366,11 @@
       };
     }
 
+
+    /*
+      If loss is forced,
+      delay it.
+    */
 
     if (
       losses.length
@@ -3006,6 +3428,10 @@
     }
 
 
+    /*
+      Verified early opening.
+    */
+
     const opening =
       getOpeningAnalysis(
         position
@@ -3050,8 +3476,12 @@
     );
 
 
-    heuristicTT.clear();
+    aiTable.clear();
 
+
+    /*
+      Immediate win.
+    */
 
     for (
       const col
@@ -3084,16 +3514,21 @@
     }
 
 
-    const safe =
-      aiOrderedColumns(
+    const possible =
+      nonLosingMovesRaw(
         position.current,
         position.mask
       );
 
 
+    /*
+      Forced loss.
+      Return a legal move anyway.
+    */
+
     if (
-      safe.length ===
-      0
+      possible ===
+      0n
     ) {
       const fallback =
         CENTER_ORDER.find(
@@ -3125,8 +3560,22 @@
     }
 
 
+    let preferred =
+      CENTER_ORDER.find(
+        col =>
+          (
+            possible &
+            moveBitRaw(
+              position.mask,
+              col
+            )
+          ) !==
+          0n
+      );
+
+
     let bestMove =
-      safe[0];
+      preferred;
 
 
     let bestScore =
@@ -3142,6 +3591,10 @@
       position.moves;
 
 
+    /*
+      Iterative deepening.
+    */
+
     for (
       let depth = 1;
       depth <=
@@ -3154,6 +3607,31 @@
       ) {
         break;
       }
+
+
+      timedOut =
+        false;
+
+
+      const total =
+        buildOrderedMoves(
+          position.current,
+          position.mask,
+          position.moves,
+          possible,
+          preferred
+        );
+
+
+      const cols =
+        MOVE_COLS[
+          position.moves
+        ];
+
+
+      const nextCurrent =
+        position.current ^
+        position.mask;
 
 
       let localBest =
@@ -3172,21 +3650,11 @@
         true;
 
 
-      const cols =
-        aiOrderedColumns(
-          position.current,
-          position.mask
-        );
-
-
-      const nextCurrent =
-        position.current ^
-        position.mask;
-
-
       for (
-        const col
-        of cols
+        let index = 0;
+        index <
+        total;
+        index++
       ) {
         if (
           performance.now() >=
@@ -3195,8 +3663,15 @@
           finished =
             false;
 
+
           break;
         }
+
+
+        const col =
+          cols[
+            index
+          ];
 
 
         const move =
@@ -3234,6 +3709,7 @@
           finished =
             false;
 
+
           break;
         }
 
@@ -3248,6 +3724,7 @@
         ) {
           localScore =
             score;
+
 
           localBest =
             col;
@@ -3281,6 +3758,10 @@
 
       completedDepth =
         depth;
+
+
+      preferred =
+        localBest;
 
 
       if (
@@ -3350,11 +3831,15 @@
   // PLAY
   // ============================================================
 
-  function play(col) {
+  function play(
+    col
+  ) {
     if (
       gameOver ||
-      col < 0 ||
-      col >= WIDTH ||
+      col <
+        0 ||
+      col >=
+        WIDTH ||
       !position.canPlay(
         col
       )
@@ -3364,7 +3849,9 @@
 
 
     const row =
-      heights[col];
+      heights[
+        col
+      ];
 
 
     const player =
@@ -3382,11 +3869,17 @@
     );
 
 
-    grid[row][col] =
+    grid[
+      row
+    ][
+      col
+    ] =
       player;
 
 
-    heights[col]--;
+    heights[
+      col
+    ]--;
 
 
     const move = {
@@ -3401,7 +3894,8 @@
     );
 
 
-    redoStack = [];
+    redoStack =
+      [];
 
 
     clearAnalysisProgress();
@@ -3412,6 +3906,7 @@
     ) {
       gameOver =
         true;
+
 
       winner =
         player;
@@ -3424,6 +3919,7 @@
     ) {
       gameOver =
         true;
+
 
       winner =
         null;
@@ -3528,7 +4024,8 @@
 
 
     if (
-      row < 0
+      row <
+      0
     ) {
       return null;
     }
@@ -3586,6 +4083,7 @@
       gameOver =
         true;
 
+
       winner =
         player;
     }
@@ -3598,6 +4096,7 @@
       gameOver =
         true;
 
+
       winner =
         null;
     }
@@ -3606,6 +4105,7 @@
     else {
       gameOver =
         false;
+
 
       winner =
         null;
@@ -3665,8 +4165,12 @@
       "A";
 
 
-    history = [];
-    redoStack = [];
+    history =
+      [];
+
+
+    redoStack =
+      [];
 
 
     gameOver =
@@ -3677,7 +4181,7 @@
       null;
 
 
-    heuristicTT.clear();
+    aiTable.clear();
 
 
     clearAnalysisProgress();
@@ -3701,12 +4205,15 @@
 
       grid:
         grid.map(
-          row =>
-            [...row]
+          row => [
+            ...row
+          ]
         ),
 
       heights:
-        [...heights],
+        [
+          ...heights
+        ],
 
       currentPlayer,
 
@@ -3734,19 +4241,17 @@
   // ============================================================
 
   function legalMoves() {
-    return (
-      CENTER_ORDER.filter(
-        col =>
-          position.canPlay(
-            col
-          )
-      )
+    return CENTER_ORDER.filter(
+      col =>
+        position.canPlay(
+          col
+        )
     );
   }
 
 
   // ============================================================
-  // VALIDATE
+  // VALIDATION
   // ============================================================
 
   function validate() {
@@ -3789,6 +4294,13 @@
 
 
   // ============================================================
+  // START
+  // ============================================================
+
+  reset();
+
+
+  // ============================================================
   // PUBLIC API
   // ============================================================
 
@@ -3827,4 +4339,5 @@
         EXACT_UNKNOWN
     }
   };
+
 })();
