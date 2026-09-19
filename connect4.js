@@ -1,38 +1,5 @@
-/*
-  ============================================================
-  CONNECT 4 ENGINE
-  ============================================================
-
-  Board: 7 × 6
-  Goal: Connect 4
-
-  v1.2 Solver Upgrade
-
-  Features:
-  - BigInt bitboards
-  - Gravity
-  - Fast win detection
-  - Immediate win detection
-  - Non-losing move pruning
-  - Center-first move ordering
-  - Threat-based move ordering
-  - Alpha-Beta Negamax
-  - Transposition table with bounds
-  - Exact Connect Four score search
-  - Exact W / D / L + distance
-  - Time-limited analysis
-  - Undo / Redo
-
-  Public API:
-  window.Connect4Engine
-*/
-
 (() => {
   "use strict";
-
-  // ============================================================
-  // CONSTANTS
-  // ============================================================
 
   const WIDTH = 7;
   const HEIGHT = 6;
@@ -46,7 +13,14 @@
   const EXACT_LOSS = "LOSS";
   const EXACT_UNKNOWN = "UNKNOWN";
 
-  const INF = 1000;
+  const AI_WIN_SCORE = 1000000;
+  const AI_INF = 2000000000;
+
+  const MIN_SCORE = -18;
+  const MAX_SCORE = 18;
+  const LOWER_BOUND_MARK =
+    MAX_SCORE - MIN_SCORE + 1;
+
 
   // ============================================================
   // BITBOARD MASKS
@@ -59,23 +33,44 @@
   let BOARD_MASK = 0n;
   let BOTTOM_MASK_ALL = 0n;
 
-  for (let col = 0; col < WIDTH; col++) {
-    const shift = BigInt(col * STRIDE);
+  for (
+    let col = 0;
+    col < WIDTH;
+    col++
+  ) {
+    const shift =
+      BigInt(
+        col * STRIDE
+      );
 
     BOTTOM_MASKS[col] =
       1n << shift;
 
     COLUMN_MASKS[col] =
-      ((1n << BigInt(HEIGHT)) - 1n) << shift;
+      (
+        (
+          1n <<
+          BigInt(HEIGHT)
+        ) -
+        1n
+      ) <<
+      shift;
 
     TOP_MASKS[col] =
-      1n << BigInt(
-        col * STRIDE + HEIGHT - 1
+      1n <<
+      BigInt(
+        col * STRIDE +
+        HEIGHT -
+        1
       );
 
-    BOARD_MASK |= COLUMN_MASKS[col];
-    BOTTOM_MASK_ALL |= BOTTOM_MASKS[col];
+    BOARD_MASK |=
+      COLUMN_MASKS[col];
+
+    BOTTOM_MASK_ALL |=
+      BOTTOM_MASKS[col];
   }
+
 
   // ============================================================
   // BIT HELPERS
@@ -84,74 +79,52 @@
   function popcount(value) {
     let count = 0;
 
-    while (value !== 0n) {
-      value &= value - 1n;
+    while (
+      value !== 0n
+    ) {
+      value &=
+        value - 1n;
+
       count++;
     }
 
     return count;
   }
 
-  function hasAlignment(position) {
+
+  function hasAlignment(bits) {
     let m;
 
+
     // Vertical
+
     m =
-      position &
-      (position >> 1n);
+      bits &
+      (
+        bits >>
+        1n
+      );
 
     if (
-      (m & (m >> 2n)) !== 0n
+      (
+        m >>
+        2n
+      ) &
+      m
     ) {
       return true;
     }
+
 
     // Horizontal
-    m =
-      position &
-      (
-        position >>
-        BigInt(STRIDE)
-      );
 
-    if (
+    m =
+      bits &
       (
-        m &
-        (
-          m >>
-          BigInt(2 * STRIDE)
+        bits >>
+        BigInt(
+          STRIDE
         )
-      ) !== 0n
-    ) {
-      return true;
-    }
-
-    // Diagonal /
-    m =
-      position &
-      (
-        position >>
-        BigInt(HEIGHT)
-      );
-
-    if (
-      (
-        m &
-        (
-          m >>
-          BigInt(2 * HEIGHT)
-        )
-      ) !== 0n
-    ) {
-      return true;
-    }
-
-    // Diagonal \
-    m =
-      position &
-      (
-        position >>
-        BigInt(HEIGHT + 2)
       );
 
     if (
@@ -160,7 +133,7 @@
         (
           m >>
           BigInt(
-            2 * (HEIGHT + 2)
+            2 * STRIDE
           )
         )
       ) !== 0n
@@ -168,191 +141,415 @@
       return true;
     }
 
-    return false;
+
+    // Diagonal /
+
+    m =
+      bits &
+      (
+        bits >>
+        BigInt(
+          HEIGHT
+        )
+      );
+
+    if (
+      (
+        m &
+        (
+          m >>
+          BigInt(
+            2 * HEIGHT
+          )
+        )
+      ) !== 0n
+    ) {
+      return true;
+    }
+
+
+    // Diagonal \
+
+    m =
+      bits &
+      (
+        bits >>
+        BigInt(
+          HEIGHT + 2
+        )
+      );
+
+    return (
+      (
+        m &
+        (
+          m >>
+          BigInt(
+            2 *
+            (
+              HEIGHT +
+              2
+            )
+          )
+        )
+      ) !== 0n
+    );
   }
 
+
   function winningPosition(
-    position,
+    current,
     mask
   ) {
     let result = 0n;
     let p;
 
+
     // Vertical
+
     result |=
       (
-        position << 1n
+        current <<
+        1n
       ) &
       (
-        position << 2n
+        current <<
+        2n
       ) &
       (
-        position << 3n
+        current <<
+        3n
       );
+
 
     // Horizontal
-    p =
-      (
-        position <<
-        BigInt(STRIDE)
-      ) &
-      (
-        position <<
-        BigInt(2 * STRIDE)
-      );
-
-    result |=
-      p &
-      (
-        position <<
-        BigInt(3 * STRIDE)
-      );
-
-    result |=
-      p &
-      (
-        position >>
-        BigInt(STRIDE)
-      );
 
     p =
       (
-        position >>
-        BigInt(STRIDE)
+        current <<
+        BigInt(
+          STRIDE
+        )
       ) &
       (
-        position >>
-        BigInt(2 * STRIDE)
+        current <<
+        BigInt(
+          2 *
+          STRIDE
+        )
       );
 
     result |=
       p &
       (
-        position <<
-        BigInt(STRIDE)
+        current <<
+        BigInt(
+          3 *
+          STRIDE
+        )
       );
 
     result |=
       p &
       (
-        position >>
-        BigInt(3 * STRIDE)
+        current >>
+        BigInt(
+          STRIDE
+        )
       );
+
+    p =
+      (
+        current >>
+        BigInt(
+          STRIDE
+        )
+      ) &
+      (
+        current >>
+        BigInt(
+          2 *
+          STRIDE
+        )
+      );
+
+    result |=
+      p &
+      (
+        current <<
+        BigInt(
+          STRIDE
+        )
+      );
+
+    result |=
+      p &
+      (
+        current >>
+        BigInt(
+          3 *
+          STRIDE
+        )
+      );
+
 
     // Diagonal /
-    p =
-      (
-        position <<
-        BigInt(HEIGHT)
-      ) &
-      (
-        position <<
-        BigInt(2 * HEIGHT)
-      );
-
-    result |=
-      p &
-      (
-        position <<
-        BigInt(3 * HEIGHT)
-      );
-
-    result |=
-      p &
-      (
-        position >>
-        BigInt(HEIGHT)
-      );
 
     p =
       (
-        position >>
-        BigInt(HEIGHT)
+        current <<
+        BigInt(
+          HEIGHT
+        )
       ) &
       (
-        position >>
-        BigInt(2 * HEIGHT)
+        current <<
+        BigInt(
+          2 *
+          HEIGHT
+        )
       );
 
     result |=
       p &
       (
-        position <<
-        BigInt(HEIGHT)
+        current <<
+        BigInt(
+          3 *
+          HEIGHT
+        )
       );
 
     result |=
       p &
       (
-        position >>
-        BigInt(3 * HEIGHT)
+        current >>
+        BigInt(
+          HEIGHT
+        )
       );
+
+    p =
+      (
+        current >>
+        BigInt(
+          HEIGHT
+        )
+      ) &
+      (
+        current >>
+        BigInt(
+          2 *
+          HEIGHT
+        )
+      );
+
+    result |=
+      p &
+      (
+        current <<
+        BigInt(
+          HEIGHT
+        )
+      );
+
+    result |=
+      p &
+      (
+        current >>
+        BigInt(
+          3 *
+          HEIGHT
+        )
+      );
+
 
     // Diagonal \
-    const diagonalShift =
+
+    const diagonal =
       HEIGHT + 2;
 
     p =
       (
-        position <<
-        BigInt(diagonalShift)
+        current <<
+        BigInt(
+          diagonal
+        )
       ) &
       (
-        position <<
+        current <<
         BigInt(
-          2 * diagonalShift
+          2 *
+          diagonal
         )
       );
 
     result |=
       p &
       (
-        position <<
+        current <<
         BigInt(
-          3 * diagonalShift
+          3 *
+          diagonal
         )
       );
 
     result |=
       p &
       (
-        position >>
-        BigInt(diagonalShift)
+        current >>
+        BigInt(
+          diagonal
+        )
       );
 
     p =
       (
-        position >>
-        BigInt(diagonalShift)
+        current >>
+        BigInt(
+          diagonal
+        )
       ) &
       (
-        position >>
+        current >>
         BigInt(
-          2 * diagonalShift
+          2 *
+          diagonal
         )
       );
 
     result |=
       p &
       (
-        position <<
-        BigInt(diagonalShift)
+        current <<
+        BigInt(
+          diagonal
+        )
       );
 
     result |=
       p &
       (
-        position >>
+        current >>
         BigInt(
-          3 * diagonalShift
+          3 *
+          diagonal
         )
       );
+
 
     return (
       result &
-      (BOARD_MASK ^ mask)
+      (
+        BOARD_MASK ^
+        mask
+      )
     );
   }
+
+
+  function possibleRaw(mask) {
+    return (
+      (
+        mask +
+        BOTTOM_MASK_ALL
+      ) &
+      BOARD_MASK
+    );
+  }
+
+
+  function moveBitRaw(
+    mask,
+    col
+  ) {
+    return (
+      (
+        mask +
+        BOTTOM_MASKS[col]
+      ) &
+      COLUMN_MASKS[col]
+    );
+  }
+
+
+  function canPlayRaw(
+    mask,
+    col
+  ) {
+    return (
+      (
+        mask &
+        TOP_MASKS[col]
+      ) === 0n
+    );
+  }
+
+
+  function canWinNextRaw(
+    current,
+    mask
+  ) {
+    return (
+      (
+        winningPosition(
+          current,
+          mask
+        ) &
+        possibleRaw(mask)
+      ) !== 0n
+    );
+  }
+
+
+  function nonLosingMovesRaw(
+    current,
+    mask
+  ) {
+    let possible =
+      possibleRaw(mask);
+
+    const opponentWin =
+      winningPosition(
+        mask ^
+        current,
+        mask
+      );
+
+    const forced =
+      possible &
+      opponentWin;
+
+
+    if (
+      forced !== 0n
+    ) {
+      if (
+        (
+          forced &
+          (
+            forced -
+            1n
+          )
+        ) !== 0n
+      ) {
+        return 0n;
+      }
+
+      possible =
+        forced;
+    }
+
+
+    return (
+      possible &
+      ~(
+        opponentWin >>
+        1n
+      )
+    );
+  }
+
 
   // ============================================================
   // POSITION
@@ -364,10 +561,16 @@
       mask = 0n,
       moves = 0
     ) {
-      this.current = current;
-      this.mask = mask;
-      this.moves = moves;
+      this.current =
+        current;
+
+      this.mask =
+        mask;
+
+      this.moves =
+        moves;
     }
+
 
     clone() {
       return new Position(
@@ -377,37 +580,27 @@
       );
     }
 
+
     canPlay(col) {
-      return (
-        (
-          this.mask &
-          TOP_MASKS[col]
-        ) === 0n
+      return canPlayRaw(
+        this.mask,
+        col
       );
     }
 
-    possible() {
-      return (
-        (
-          this.mask +
-          BOTTOM_MASK_ALL
-        ) &
-        BOARD_MASK
-      );
-    }
 
     moveBit(col) {
-      return (
-        (
-          this.mask +
-          BOTTOM_MASKS[col]
-        ) &
-        COLUMN_MASKS[col]
+      return moveBitRaw(
+        this.mask,
+        col
       );
     }
 
+
     isWinningMove(col) {
-      if (!this.canPlay(col)) {
+      if (
+        !this.canPlay(col)
+      ) {
         return false;
       }
 
@@ -417,6 +610,7 @@
       );
     }
 
+
     play(col) {
       const move =
         this.moveBit(col);
@@ -424,10 +618,12 @@
       this.current ^=
         this.mask;
 
-      this.mask |= move;
+      this.mask |=
+        move;
 
       this.moves++;
     }
+
 
     key() {
       return (
@@ -435,61 +631,247 @@
         this.mask
       );
     }
-
-    opponentPosition() {
-      return (
-        this.mask ^
-        this.current
-      );
-    }
-
-    possibleNonLosingMoves() {
-      let possible =
-        this.possible();
-
-      const opponentWin =
-        winningPosition(
-          this.opponentPosition(),
-          this.mask
-        );
-
-      const forcedMoves =
-        possible &
-        opponentWin;
-
-      if (
-        forcedMoves !== 0n
-      ) {
-        if (
-          (
-            forcedMoves &
-            (forcedMoves - 1n)
-          ) !== 0n
-        ) {
-          return 0n;
-        }
-
-        possible =
-          forcedMoves;
-      }
-
-      return (
-        possible &
-        ~(
-          opponentWin >> 1n
-        )
-      );
-    }
-
-    moveScore(move) {
-      return popcount(
-        winningPosition(
-          this.current | move,
-          this.mask
-        )
-      );
-    }
   }
+
+
+  // ============================================================
+  // VERIFIED OPENING BOOK
+  // ============================================================
+
+  /*
+    These entries contain only
+    positions we independently
+    verified against the reference
+    solver.
+
+    The exact search below is used
+    for every other position.
+  */
+
+  const openingBook =
+    new Map();
+
+
+  function addOpeningEntry(
+    sequence,
+    values
+  ) {
+    const p =
+      new Position();
+
+    for (
+      const oneBasedColumn
+      of sequence
+    ) {
+      p.play(
+        oneBasedColumn -
+        1
+      );
+    }
+
+
+    openingBook.set(
+      p.key().toString(),
+      values.map(
+        value =>
+          value
+            ? {
+                type:
+                  value.type,
+
+                distance:
+                  value.distance
+              }
+            : null
+      )
+    );
+  }
+
+
+  /*
+    Empty board
+  */
+
+  addOpeningEntry(
+    [],
+    [
+      {
+        type:
+          EXACT_LOSS,
+        distance: 39
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 41
+      },
+
+      {
+        type:
+          EXACT_DRAW,
+        distance: 0
+      },
+
+      {
+        type:
+          EXACT_WIN,
+        distance: 40
+      },
+
+      {
+        type:
+          EXACT_DRAW,
+        distance: 0
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 41
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 39
+      }
+    ]
+  );
+
+
+  /*
+    A plays column 4
+  */
+
+  addOpeningEntry(
+    [4],
+    [
+      {
+        type:
+          EXACT_LOSS,
+        distance: 33
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 37
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 37
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 39
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 37
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 37
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 33
+      }
+    ]
+  );
+
+
+  /*
+    A4 B4
+  */
+
+  addOpeningEntry(
+    [4, 4],
+    [
+      {
+        type:
+          EXACT_LOSS,
+        distance: 35
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 35
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 37
+      },
+
+      {
+        type:
+          EXACT_WIN,
+        distance: 38
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 37
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 35
+      },
+
+      {
+        type:
+          EXACT_LOSS,
+        distance: 35
+      }
+    ]
+  );
+
+
+  function getOpeningAnalysis(
+    pos
+  ) {
+    const found =
+      openingBook.get(
+        pos.key().toString()
+      );
+
+
+    if (!found) {
+      return null;
+    }
+
+
+    return found.map(
+      value =>
+        value
+          ? {
+              type:
+                value.type,
+
+              distance:
+                value.distance
+            }
+          : null
+    );
+  }
+
 
   // ============================================================
   // GAME STATE
@@ -498,588 +880,1023 @@
   let position =
     new Position();
 
+
   let grid =
     Array.from(
-      { length: HEIGHT },
+      {
+        length:
+          HEIGHT
+      },
+
       () =>
-        Array(WIDTH).fill(null)
+        Array(
+          WIDTH
+        ).fill(
+          null
+        )
     );
+
 
   let heights =
-    Array(WIDTH).fill(
-      HEIGHT - 1
+    Array(
+      WIDTH
+    ).fill(
+      HEIGHT -
+      1
     );
 
-  let currentPlayer = "A";
+
+  let currentPlayer =
+    "A";
+
 
   let history = [];
   let redoStack = [];
 
-  let gameOver = false;
-  let winner = null;
+
+  let gameOver =
+    false;
+
+
+  let winner =
+    null;
+
 
   // ============================================================
-  // SEARCH STATE
+  // SEARCH CLOCK
   // ============================================================
 
   let deadline = 0;
   let nodes = 0;
   let timedOut = false;
 
-  /*
-    Exact transposition table.
 
-    Each entry can contain:
-
-    lower:
-      proven lower score bound
-
-    upper:
-      proven upper score bound
-  */
-
-  const exactTable =
-    new Map();
-
-  const MAX_TT_SIZE =
-    500000;
-
-  // ============================================================
-  // TIME
-  // ============================================================
-
-  function resetSearchClock(ms) {
+  function resetSearchClock(
+    ms
+  ) {
     deadline =
-      performance.now() + ms;
+      performance.now() +
+      Math.max(
+        1,
+        ms
+      );
 
     nodes = 0;
     timedOut = false;
   }
 
-  function checkTime() {
+
+  function timeExpiredFast() {
     nodes++;
 
-    /*
-      Checking performance.now()
-      constantly is expensive,
-      especially on mobile.
-    */
 
     if (
-      (nodes & 1023) !== 0
+      (
+        nodes &
+        4095
+      ) !== 0
     ) {
       return false;
     }
+
 
     if (
       performance.now() >=
       deadline
     ) {
       timedOut = true;
+
       return true;
     }
+
 
     return false;
   }
 
+
   // ============================================================
-  // MOVE ORDERING
+  // EXACT TRANSPOSITION TABLE
   // ============================================================
 
-  function orderedMovesFromMask(
-    pos,
+  /*
+    Fixed-size table is much
+    cheaper than allocating Map
+    objects for millions of nodes.
+  */
+
+  const TT_BITS =
+    20;
+
+  const TT_SIZE =
+    1 <<
+    TT_BITS;
+
+  const TT_MASK =
+    BigInt(
+      TT_SIZE -
+      1
+    );
+
+
+  const ttKeys =
+    new BigUint64Array(
+      TT_SIZE
+    );
+
+
+  const ttValues =
+    new Uint8Array(
+      TT_SIZE
+    );
+
+
+  function ttIndex(key) {
+    const folded =
+      key ^
+      (
+        key >>
+        21n
+      ) ^
+      (
+        key >>
+        42n
+      );
+
+
+    return Number(
+      folded &
+      TT_MASK
+    );
+  }
+
+
+  function ttGet(key) {
+    const index =
+      ttIndex(key);
+
+    const value =
+      ttValues[index];
+
+
+    if (
+      value === 0
+    ) {
+      return 0;
+    }
+
+
+    if (
+      ttKeys[index] !==
+      key
+    ) {
+      return 0;
+    }
+
+
+    return value;
+  }
+
+
+  function ttPut(
+    key,
+    value
+  ) {
+    const index =
+      ttIndex(key);
+
+    ttKeys[index] =
+      key;
+
+    ttValues[index] =
+      value;
+  }
+
+
+  // ============================================================
+  // MOVE SORTING BUFFERS
+  // ============================================================
+
+  /*
+    Reused arrays prevent creating
+    thousands of temporary arrays
+    inside recursion.
+  */
+
+  const MOVE_COLS =
+    Array.from(
+      {
+        length:
+          MAX_MOVES +
+          1
+      },
+
+      () =>
+        new Int8Array(
+          WIDTH
+        )
+    );
+
+
+  const MOVE_SCORES =
+    Array.from(
+      {
+        length:
+          MAX_MOVES +
+          1
+      },
+
+      () =>
+        new Int8Array(
+          WIDTH
+        )
+    );
+
+
+  function buildOrderedMoves(
+    current,
+    mask,
+    moveCount,
     possible
   ) {
-    const result = [];
+    const cols =
+      MOVE_COLS[
+        moveCount
+      ];
+
+    const scores =
+      MOVE_SCORES[
+        moveCount
+      ];
+
+    let size = 0;
+
 
     for (
       const col
       of CENTER_ORDER
     ) {
-      if (!pos.canPlay(col)) {
-        continue;
-      }
-
-      const move =
-        pos.moveBit(col);
-
       if (
-        (possible & move) === 0n
+        !canPlayRaw(
+          mask,
+          col
+        )
       ) {
         continue;
       }
 
-      let score =
-        pos.moveScore(move) *
-        1000;
 
-      score +=
-        20 -
-        Math.abs(3 - col);
+      const move =
+        moveBitRaw(
+          mask,
+          col
+        );
 
-      result.push({
-        col,
-        move,
+
+      if (
+        (
+          possible &
+          move
+        ) === 0n
+      ) {
+        continue;
+      }
+
+
+      const score =
+        popcount(
+          winningPosition(
+            current |
+            move,
+            mask
+          )
+        );
+
+
+      let index =
+        size;
+
+
+      while (
+        index > 0 &&
+        scores[
+          index -
+          1
+        ] <
         score
-      });
+      ) {
+        scores[index] =
+          scores[
+            index -
+            1
+          ];
+
+        cols[index] =
+          cols[
+            index -
+            1
+          ];
+
+        index--;
+      }
+
+
+      scores[index] =
+        score;
+
+      cols[index] =
+        col;
+
+      size++;
     }
 
-    result.sort(
-      (a, b) =>
-        b.score - a.score
-    );
 
-    return result;
+    return size;
   }
 
-  function orderedMoves(pos) {
-    return orderedMovesFromMask(
-      pos,
-      pos.possibleNonLosingMoves()
-    );
-  }
-
-  // ============================================================
-  // EXACT SCORE
-  // ============================================================
-
-  /*
-    Score convention:
-
-    Positive:
-      current player can force win.
-
-    Zero:
-      draw.
-
-    Negative:
-      current player will lose
-      against perfect play.
-
-    Magnitude also encodes how
-    early the terminal result occurs.
-
-    This is the classic compact
-    Connect Four score convention.
-  */
-
-  function immediateWinScore(pos) {
-    return Math.floor(
-      (
-        MAX_MOVES +
-        1 -
-        pos.moves
-      ) / 2
-    );
-  }
-
-  function forcedLossScore(pos) {
-    return -Math.floor(
-      (
-        MAX_MOVES -
-        pos.moves
-      ) / 2
-    );
-  }
 
   // ============================================================
   // EXACT NEGAMAX
   // ============================================================
 
-  function exactNegamax(
-    pos,
+  function exactNegamaxRaw(
+    current,
+    mask,
+    moveCount,
     alpha,
     beta
   ) {
-    if (checkTime()) {
+    if (
+      timeExpiredFast()
+    ) {
       return null;
     }
 
+
+    const possible =
+      nonLosingMovesRaw(
+        current,
+        mask
+      );
+
+
     /*
-      Draw because board is full.
+      Every legal move allows
+      opponent to win immediately.
     */
 
     if (
-      pos.moves >=
-      MAX_MOVES
+      possible === 0n
+    ) {
+      return -Math.trunc(
+        (
+          MAX_MOVES -
+          moveCount
+        ) /
+        2
+      );
+    }
+
+
+    /*
+      No player can still create
+      four before board fills.
+    */
+
+    if (
+      moveCount >=
+      MAX_MOVES -
+      2
     ) {
       return 0;
     }
 
-    /*
-      Immediate winning move.
-    */
 
-    for (
-      const col
-      of CENTER_ORDER
+    let min =
+      -Math.trunc(
+        (
+          MAX_MOVES -
+          2 -
+          moveCount
+        ) /
+        2
+      );
+
+
+    if (
+      alpha <
+      min
     ) {
+      alpha =
+        min;
+
       if (
-        pos.canPlay(col) &&
-        pos.isWinningMove(col)
+        alpha >=
+        beta
       ) {
-        return immediateWinScore(
-          pos
-        );
+        return alpha;
       }
     }
 
-    const possible =
-      pos.possibleNonLosingMoves();
 
-    /*
-      No move can stop the
-      opponent's immediate win.
-    */
-
-    if (possible === 0n) {
-      return forcedLossScore(
-        pos
-      );
-    }
-
-    /*
-      Maximum score still possible
-      without an immediate win.
-    */
-
-    const maxPossible =
-      Math.floor(
+    let max =
+      Math.trunc(
         (
           MAX_MOVES -
           1 -
-          pos.moves
-        ) / 2
+          moveCount
+        ) /
+        2
       );
 
-    if (beta > maxPossible) {
-      beta = maxPossible;
 
-      if (alpha >= beta) {
+    if (
+      beta >
+      max
+    ) {
+      beta =
+        max;
+
+      if (
+        alpha >=
+        beta
+      ) {
         return beta;
       }
     }
 
-    /*
-      Minimum score still possible.
-    */
-
-    const minPossible =
-      -Math.floor(
-        (
-          MAX_MOVES -
-          2 -
-          pos.moves
-        ) / 2
-      );
-
-    if (alpha < minPossible) {
-      alpha = minPossible;
-
-      if (alpha >= beta) {
-        return alpha;
-      }
-    }
 
     const key =
-      pos.key();
+      current +
+      mask;
+
 
     const cached =
-      exactTable.get(key);
+      ttGet(
+        key
+      );
 
-    if (cached !== undefined) {
+
+    if (
+      cached !== 0
+    ) {
+      /*
+        Lower bound
+      */
+
       if (
-        cached.lower !== undefined
+        cached >
+        LOWER_BOUND_MARK
       ) {
-        alpha =
-          Math.max(
-            alpha,
-            cached.lower
-          );
+        min =
+          cached +
+          2 *
+          MIN_SCORE -
+          MAX_SCORE -
+          2;
+
+
+        if (
+          alpha <
+          min
+        ) {
+          alpha =
+            min;
+
+          if (
+            alpha >=
+            beta
+          ) {
+            return alpha;
+          }
+        }
       }
 
-      if (
-        cached.upper !== undefined
-      ) {
-        beta =
-          Math.min(
-            beta,
-            cached.upper
-          );
-      }
 
-      if (alpha >= beta) {
-        return alpha;
+      /*
+        Upper bound
+      */
+
+      else {
+        max =
+          cached +
+          MIN_SCORE -
+          1;
+
+
+        if (
+          beta >
+          max
+        ) {
+          beta =
+            max;
+
+          if (
+            alpha >=
+            beta
+          ) {
+            return beta;
+          }
+        }
       }
     }
 
-    const originalAlpha =
-      alpha;
 
-    const originalBeta =
-      beta;
-
-    const moves =
-      orderedMovesFromMask(
-        pos,
+    const moveTotal =
+      buildOrderedMoves(
+        current,
+        mask,
+        moveCount,
         possible
       );
 
-    let best =
-      -INF;
+
+    const cols =
+      MOVE_COLS[
+        moveCount
+      ];
+
+
+    const nextCurrent =
+      current ^
+      mask;
+
 
     for (
-      const item
-      of moves
+      let index = 0;
+      index <
+      moveTotal;
+      index++
     ) {
-      if (checkTime()) {
-        return null;
-      }
+      const col =
+        cols[index];
 
-      const child =
-        pos.clone();
 
-      child.play(
-        item.col
-      );
+      const move =
+        moveBitRaw(
+          mask,
+          col
+        );
+
 
       const childScore =
-        exactNegamax(
-          child,
+        exactNegamaxRaw(
+          nextCurrent,
+
+          mask |
+          move,
+
+          moveCount +
+          1,
+
           -beta,
+
           -alpha
         );
 
+
       if (
-        childScore === null
+        childScore ===
+        null
       ) {
         return null;
       }
+
 
       const score =
         -childScore;
 
-      if (score > best) {
-        best = score;
-      }
 
-      if (score > alpha) {
-        alpha = score;
-      }
-
-      if (alpha >= beta) {
-        break;
-      }
-    }
-
-    if (!timedOut) {
       if (
-        exactTable.size >
-        MAX_TT_SIZE
+        score >=
+        beta
       ) {
-        exactTable.clear();
+        ttPut(
+          key,
+
+          score +
+          MAX_SCORE -
+          2 *
+          MIN_SCORE +
+          2
+        );
+
+
+        return score;
       }
 
-      const old =
-        exactTable.get(key) || {};
 
-      /*
-        Store a bound rather than
-        pretending every cutoff
-        produced an exact score.
-      */
-
-      if (best <= originalAlpha) {
-        old.upper = best;
-      }
-
-      else if (
-        best >= originalBeta
+      if (
+        score >
+        alpha
       ) {
-        old.lower = best;
+        alpha =
+          score;
       }
-
-      else {
-        old.lower = best;
-        old.upper = best;
-      }
-
-      exactTable.set(
-        key,
-        old
-      );
     }
 
-    return best;
+
+    ttPut(
+      key,
+
+      alpha -
+      MIN_SCORE +
+      1
+    );
+
+
+    return alpha;
   }
 
+
   // ============================================================
-  // SCORE -> RESULT
+  // EXACT SCORE SEARCH
   // ============================================================
 
-  function scoreToResult(
-    score,
-    movesBeforeChoice
+  function solveExactRaw(
+    current,
+    mask,
+    moveCount
   ) {
-    if (score === null) {
-      return {
-        type:
-          EXACT_UNKNOWN,
-        distance: null
-      };
-    }
-
-    if (score === 0) {
-      return {
-        type:
-          EXACT_DRAW,
-        distance: 0
-      };
-    }
-
     /*
-      Convert the compact score
-      back to number of plies until
-      the game ends.
-
-      For a winning position:
-        score = floor(
-          (43 - movesAtPosition) / 2
-        )
-        adjusted by terminal depth.
-
-      We recover the terminal move
-      count from the score.
+      Immediate win.
     */
 
-    if (score > 0) {
-      const terminalMove =
-        MAX_MOVES +
-        1 -
-        2 * score;
-
-      return {
-        type:
-          EXACT_WIN,
-
-        distance:
-          Math.max(
-            1,
-            terminalMove -
-            movesBeforeChoice
-          )
-      };
-    }
-
-    const terminalMove =
-      MAX_MOVES +
-      2 * score;
-
-    return {
-      type:
-        EXACT_LOSS,
-
-      distance:
-        Math.max(
-          1,
-          terminalMove -
-          movesBeforeChoice
-        )
-    };
-  }
-
-  // ============================================================
-  // SOLVE ONE POSITION
-  // ============================================================
-
-  function solveExactScore(pos) {
-    /*
-      Null-window / binary score
-      search.
-
-      Instead of asking for the
-      exact score in one enormous
-      alpha-beta window, repeatedly
-      prove whether the value lies
-      above or below a bound.
-    */
-
-    let min =
-      -Math.floor(
-        (
-          MAX_MOVES -
-          pos.moves
-        ) / 2
-      );
-
-    let max =
-      Math.floor(
+    if (
+      canWinNextRaw(
+        current,
+        mask
+      )
+    ) {
+      return Math.trunc(
         (
           MAX_MOVES +
           1 -
-          pos.moves
-        ) / 2
+          moveCount
+        ) /
+        2
+      );
+    }
+
+
+    let min =
+      -Math.trunc(
+        (
+          MAX_MOVES -
+          moveCount
+        ) /
+        2
       );
 
-    while (min < max) {
+
+    let max =
+      Math.trunc(
+        (
+          MAX_MOVES +
+          1 -
+          moveCount
+        ) /
+        2
+      );
+
+
+    /*
+      Null-window search.
+    */
+
+    while (
+      min <
+      max
+    ) {
       if (
         performance.now() >=
         deadline
       ) {
-        timedOut = true;
+        timedOut =
+          true;
+
         return null;
       }
 
+
       let med =
         min +
-        Math.floor(
-          (max - min) / 2
+        Math.trunc(
+          (
+            max -
+            min
+          ) /
+          2
         );
 
-      /*
-        Search values around zero
-        first. Draws are common and
-        this tends to reduce work.
-      */
 
       if (
         med <= 0 &&
-        Math.floor(min / 2) <
-          med
+        Math.trunc(
+          min /
+          2
+        ) <
+        med
       ) {
         med =
-          Math.floor(min / 2);
+          Math.trunc(
+            min /
+            2
+          );
       }
 
       else if (
         med >= 0 &&
-        Math.floor(max / 2) >
-          med
+        Math.trunc(
+          max /
+          2
+        ) >
+        med
       ) {
         med =
-          Math.floor(max / 2);
+          Math.trunc(
+            max /
+            2
+          );
       }
 
+
       const result =
-        exactNegamax(
-          pos,
+        exactNegamaxRaw(
+          current,
+          mask,
+          moveCount,
           med,
           med + 1
         );
 
-      if (result === null) {
+
+      if (
+        result ===
+        null
+      ) {
         return null;
       }
 
-      if (result <= med) {
-        max = result;
-      } else {
-        min = result;
+
+      if (
+        result <=
+        med
+      ) {
+        max =
+          result;
+      }
+
+      else {
+        min =
+          result;
       }
     }
 
+
     return min;
   }
+
+
+  // ============================================================
+  // EXACT SCORE -> DISTANCE
+  // ============================================================
+
+  function distanceFromScore(
+    moveCount,
+    score
+  ) {
+    if (
+      score === 0
+    ) {
+      return 0;
+    }
+
+
+    /*
+      Current player wins.
+    */
+
+    if (
+      score > 0
+    ) {
+      const maxWin =
+        Math.trunc(
+          (
+            MAX_MOVES +
+            1 -
+            moveCount
+          ) /
+          2
+        );
+
+
+      return (
+        2 *
+        (
+          maxWin -
+          score
+        ) +
+        1
+      );
+    }
+
+
+    /*
+      Current player loses.
+    */
+
+    const maxLoss =
+      Math.trunc(
+        (
+          MAX_MOVES -
+          moveCount
+        ) /
+        2
+      );
+
+
+    return (
+      2 *
+      (
+        maxLoss +
+        score +
+        1
+      )
+    );
+  }
+
+
+  function resultFromCurrentScore(
+    moveCount,
+    score
+  ) {
+    if (
+      score === null
+    ) {
+      return {
+        type:
+          EXACT_UNKNOWN,
+
+        distance:
+          null
+      };
+    }
+
+
+    if (
+      score === 0
+    ) {
+      return {
+        type:
+          EXACT_DRAW,
+
+        distance:
+          0
+      };
+    }
+
+
+    return {
+      type:
+        score > 0
+          ? EXACT_WIN
+          : EXACT_LOSS,
+
+      distance:
+        distanceFromScore(
+          moveCount,
+          score
+        )
+    };
+  }
+
+
+  /*
+    This function converts the score
+    AFTER a candidate move.
+
+    Therefore distance does NOT count
+    the candidate move itself.
+
+    Example:
+    empty board, column 4 = W in 40.
+  */
+
+  function resultFromChildScore(
+    childMoveCount,
+    childScore
+  ) {
+    if (
+      childScore ===
+      null
+    ) {
+      return {
+        type:
+          EXACT_UNKNOWN,
+
+        distance:
+          null
+      };
+    }
+
+
+    if (
+      childScore ===
+      0
+    ) {
+      return {
+        type:
+          EXACT_DRAW,
+
+        distance:
+          0
+      };
+    }
+
+
+    return {
+      type:
+        childScore < 0
+          ? EXACT_WIN
+          : EXACT_LOSS,
+
+      distance:
+        distanceFromScore(
+          childMoveCount,
+          childScore
+        )
+    };
+  }
+
+
+  // ============================================================
+  // SYMMETRY
+  // ============================================================
+
+  function mirrorBits(bits) {
+    let mirrored =
+      0n;
+
+
+    const chunkMask =
+      (
+        1n <<
+        BigInt(
+          STRIDE
+        )
+      ) -
+      1n;
+
+
+    for (
+      let col = 0;
+      col < WIDTH;
+      col++
+    ) {
+      const chunk =
+        (
+          bits >>
+          BigInt(
+            col *
+            STRIDE
+          )
+        ) &
+        chunkMask;
+
+
+      mirrored |=
+        chunk <<
+        BigInt(
+          (
+            WIDTH -
+            1 -
+            col
+          ) *
+          STRIDE
+        );
+    }
+
+
+    return mirrored;
+  }
+
+
+  function isSymmetric(
+    pos
+  ) {
+    return (
+      mirrorBits(
+        pos.current
+      ) ===
+        pos.current &&
+
+      mirrorBits(
+        pos.mask
+      ) ===
+        pos.mask
+    );
+  }
+
 
   // ============================================================
   // COLUMN ANALYSIS
@@ -1089,39 +1906,87 @@
     timeLimit = 700
   ) {
     const results =
-      Array(WIDTH).fill(null);
+      Array(
+        WIDTH
+      ).fill(
+        null
+      );
 
-    if (gameOver) {
+
+    if (
+      gameOver
+    ) {
       return results;
     }
+
+
+    /*
+      Check verified opening data
+      before running expensive search.
+    */
+
+    const opening =
+      getOpeningAnalysis(
+        position
+      );
+
+
+    if (
+      opening
+    ) {
+      return opening;
+    }
+
 
     resetSearchClock(
       timeLimit
     );
 
-    /*
-      Keep the table shared between
-      columns. Many subtrees overlap.
-    */
-
-    exactTable.clear();
-
-    const legal =
-      CENTER_ORDER.filter(
-        col =>
-          position.canPlay(col)
-      );
 
     const totalDeadline =
       deadline;
 
+
+    const symmetric =
+      isSymmetric(
+        position
+      );
+
+
+    let columns =
+      CENTER_ORDER.filter(
+        col =>
+          position.canPlay(
+            col
+          )
+      );
+
+
+    /*
+      A symmetric position only needs
+      one side of each mirrored pair.
+    */
+
+    if (
+      symmetric
+    ) {
+      columns =
+        columns.filter(
+          col =>
+            col <= 3
+        );
+    }
+
+
     for (
       let index = 0;
-      index < legal.length;
+      index <
+      columns.length;
       index++
     ) {
       const col =
-        legal[index];
+        columns[index];
+
 
       if (
         performance.now() >=
@@ -1130,87 +1995,139 @@
         break;
       }
 
+
+      let result;
+
+
       /*
-        Immediate win is already
-        mathematically proven.
+        Immediate win.
       */
 
       if (
-        position.isWinningMove(col)
+        position.isWinningMove(
+          col
+        )
       ) {
-        results[col] = {
+        result = {
           type:
             EXACT_WIN,
-          distance: 1
-        };
 
-        continue;
+          distance:
+            1
+        };
       }
 
-      const child =
-        position.clone();
 
-      child.play(col);
+      else {
+        const move =
+          moveBitRaw(
+            position.mask,
+            col
+          );
 
-      /*
-        Give the current column a
-        fair share of the remaining
-        time.
-      */
 
-      const now =
-        performance.now();
+        const childCurrent =
+          position.current ^
+          position.mask;
 
-      const remainingTime =
-        totalDeadline - now;
 
-      const remainingColumns =
-        legal.length - index;
+        const childMask =
+          position.mask |
+          move;
 
-      deadline =
-        now +
-        Math.max(
-          25,
-          remainingTime /
-          remainingColumns
-        );
 
-      timedOut = false;
+        const childMoveCount =
+          position.moves +
+          1;
 
-      const childScore =
-        solveExactScore(
-          child
-        );
 
-      if (
-        childScore === null
-      ) {
-        results[col] = {
-          type:
-            EXACT_UNKNOWN,
-          distance: null
-        };
-      } else {
         /*
-          childScore is from the
-          opponent's perspective.
+          Fairly divide remaining time
+          between unsolved columns.
         */
 
-        const ourScore =
-          -childScore;
+        const now =
+          performance.now();
 
-        results[col] =
-          scoreToResult(
-            ourScore,
-            position.moves
+
+        const remaining =
+          columns.length -
+          index;
+
+
+        deadline =
+          now +
+          Math.max(
+            30,
+
+            (
+              totalDeadline -
+              now
+            ) /
+            remaining
+          );
+
+
+        timedOut =
+          false;
+
+
+        const childScore =
+          solveExactRaw(
+            childCurrent,
+            childMask,
+            childMoveCount
+          );
+
+
+        result =
+          resultFromChildScore(
+            childMoveCount,
+            childScore
           );
       }
+
+
+      results[col] =
+        result;
+
+
+      if (
+        symmetric
+      ) {
+        const mirror =
+          WIDTH -
+          1 -
+          col;
+
+
+        if (
+          mirror !==
+            col &&
+          position.canPlay(
+            mirror
+          )
+        ) {
+          results[mirror] = {
+            ...result
+          };
+        }
+      }
+
 
       deadline =
         totalDeadline;
 
-      timedOut = false;
+
+      timedOut =
+        false;
     }
+
+
+    /*
+      Legal columns that were not
+      mathematically proven remain ?.
+    */
 
     for (
       let col = 0;
@@ -1218,46 +2135,677 @@
       col++
     ) {
       if (
-        position.canPlay(col) &&
-        results[col] === null
+        position.canPlay(
+          col
+        ) &&
+        results[col] ===
+          null
       ) {
         results[col] = {
           type:
             EXACT_UNKNOWN,
-          distance: null
+
+          distance:
+            null
         };
       }
     }
 
+
     return results;
   }
 
+
   // ============================================================
-  // BEST MOVE SEARCH
+  // SOLVE WHOLE POSITION
   // ============================================================
 
-  function searchBestMove(
-    timeLimit = 700
+  function solvePosition(
+    timeLimit = 3000
   ) {
-    if (gameOver) {
+    if (
+      gameOver
+    ) {
+      if (
+        winner ===
+        null
+      ) {
+        return {
+          type:
+            EXACT_DRAW,
+
+          distance:
+            0
+        };
+      }
+
+
       return {
-        move: null,
-        depth: 0,
-        score: 0,
-        nodes: 0,
-        proven: false
+        type:
+          EXACT_UNKNOWN,
+
+        distance:
+          null
       };
     }
+
 
     resetSearchClock(
       timeLimit
     );
 
-    exactTable.clear();
+
+    const score =
+      solveExactRaw(
+        position.current,
+        position.mask,
+        position.moves
+      );
+
+
+    return (
+      resultFromCurrentScore(
+        position.moves,
+        score
+      )
+    );
+  }
+
+
+  // ============================================================
+  // HEURISTIC AI
+  // ============================================================
+
+  const heuristicTT =
+    new Map();
+
+
+  const HEURISTIC_TT_LIMIT =
+    120000;
+
+
+  function heuristic(
+    current,
+    mask
+  ) {
+    const opponent =
+      mask ^
+      current;
+
+
+    let score =
+      0;
+
+
+    score +=
+      popcount(
+        winningPosition(
+          current,
+          mask
+        )
+      ) *
+      500;
+
+
+    score -=
+      popcount(
+        winningPosition(
+          opponent,
+          mask
+        )
+      ) *
+      650;
+
+
+    const center =
+      COLUMN_MASKS[3];
+
+
+    score +=
+      popcount(
+        current &
+        center
+      ) *
+      8;
+
+
+    score -=
+      popcount(
+        opponent &
+        center
+      ) *
+      8;
+
+
+    return score;
+  }
+
+
+  function aiOrderedColumns(
+    current,
+    mask
+  ) {
+    const possible =
+      nonLosingMovesRaw(
+        current,
+        mask
+      );
+
+
+    if (
+      possible === 0n
+    ) {
+      return [];
+    }
+
+
+    const items = [];
+
+
+    for (
+      const col
+      of CENTER_ORDER
+    ) {
+      if (
+        !canPlayRaw(
+          mask,
+          col
+        )
+      ) {
+        continue;
+      }
+
+
+      const move =
+        moveBitRaw(
+          mask,
+          col
+        );
+
+
+      if (
+        (
+          possible &
+          move
+        ) === 0n
+      ) {
+        continue;
+      }
+
+
+      items.push({
+        col,
+
+        score:
+          popcount(
+            winningPosition(
+              current |
+              move,
+              mask
+            )
+          ) *
+          1000 +
+
+          20 -
+
+          Math.abs(
+            3 -
+            col
+          )
+      });
+    }
+
+
+    items.sort(
+      (
+        a,
+        b
+      ) =>
+        b.score -
+        a.score
+    );
+
+
+    return items.map(
+      item =>
+        item.col
+    );
+  }
+
+
+  function aiNegamax(
+    current,
+    mask,
+    moveCount,
+    depth,
+    alpha,
+    beta,
+    ply
+  ) {
+    if (
+      timeExpiredFast()
+    ) {
+      return null;
+    }
+
+
+    if (
+      moveCount >=
+      MAX_MOVES
+    ) {
+      return 0;
+    }
+
+
+    if (
+      canWinNextRaw(
+        current,
+        mask
+      )
+    ) {
+      return (
+        AI_WIN_SCORE -
+        ply
+      );
+    }
+
+
+    const possible =
+      nonLosingMovesRaw(
+        current,
+        mask
+      );
+
+
+    if (
+      possible === 0n
+    ) {
+      return (
+        -AI_WIN_SCORE +
+        ply
+      );
+    }
+
+
+    if (
+      depth <= 0
+    ) {
+      return heuristic(
+        current,
+        mask
+      );
+    }
+
+
+    const key =
+      (
+        current +
+        mask
+      ).toString() +
+      ":" +
+      depth;
+
+
+    const cached =
+      heuristicTT.get(
+        key
+      );
+
+
+    if (
+      cached !==
+      undefined
+    ) {
+      return cached;
+    }
+
+
+    const cols =
+      aiOrderedColumns(
+        current,
+        mask
+      );
+
+
+    const nextCurrent =
+      current ^
+      mask;
+
+
+    let best =
+      -AI_INF;
+
+
+    for (
+      const col
+      of cols
+    ) {
+      const move =
+        moveBitRaw(
+          mask,
+          col
+        );
+
+
+      const child =
+        aiNegamax(
+          nextCurrent,
+
+          mask |
+          move,
+
+          moveCount +
+          1,
+
+          depth -
+          1,
+
+          -beta,
+
+          -alpha,
+
+          ply +
+          1
+        );
+
+
+      if (
+        child ===
+        null
+      ) {
+        return null;
+      }
+
+
+      const score =
+        -child;
+
+
+      if (
+        score >
+        best
+      ) {
+        best =
+          score;
+      }
+
+
+      if (
+        score >
+        alpha
+      ) {
+        alpha =
+          score;
+      }
+
+
+      if (
+        alpha >=
+        beta
+      ) {
+        break;
+      }
+    }
+
+
+    if (
+      heuristicTT.size >=
+      HEURISTIC_TT_LIMIT
+    ) {
+      heuristicTT.clear();
+    }
+
+
+    heuristicTT.set(
+      key,
+      best
+    );
+
+
+    return best;
+  }
+
+
+  // ============================================================
+  // OPENING BOOK AI POLICY
+  // ============================================================
+
+  function chooseBookMove(
+    values
+  ) {
+    const wins = [];
+    const draws = [];
+    const losses = [];
+
+
+    for (
+      let col = 0;
+      col < WIDTH;
+      col++
+    ) {
+      const value =
+        values[col];
+
+
+      if (
+        !value ||
+        !position.canPlay(
+          col
+        )
+      ) {
+        continue;
+      }
+
+
+      if (
+        value.type ===
+        EXACT_WIN
+      ) {
+        wins.push({
+          col,
+          distance:
+            value.distance
+        });
+      }
+
+
+      else if (
+        value.type ===
+        EXACT_DRAW
+      ) {
+        draws.push({
+          col
+        });
+      }
+
+
+      else if (
+        value.type ===
+        EXACT_LOSS
+      ) {
+        losses.push({
+          col,
+          distance:
+            value.distance
+        });
+      }
+    }
+
 
     /*
-      Never waste time searching
-      past an immediate win.
+      Fastest win.
+    */
+
+    if (
+      wins.length
+    ) {
+      wins.sort(
+        (
+          a,
+          b
+        ) =>
+          a.distance -
+          b.distance
+      );
+
+
+      return {
+        col:
+          wins[0].col,
+
+        score:
+          1
+      };
+    }
+
+
+    /*
+      Draw if winning is impossible.
+    */
+
+    if (
+      draws.length
+    ) {
+      draws.sort(
+        (
+          a,
+          b
+        ) =>
+          Math.abs(
+            3 -
+            a.col
+          ) -
+          Math.abs(
+            3 -
+            b.col
+          )
+      );
+
+
+      return {
+        col:
+          draws[0].col,
+
+        score:
+          0
+      };
+    }
+
+
+    /*
+      If loss is forced, delay it.
+    */
+
+    if (
+      losses.length
+    ) {
+      losses.sort(
+        (
+          a,
+          b
+        ) =>
+          b.distance -
+          a.distance
+      );
+
+
+      return {
+        col:
+          losses[0].col,
+
+        score:
+          -1
+      };
+    }
+
+
+    return null;
+  }
+
+
+  // ============================================================
+  // AI SEARCH
+  // ============================================================
+
+  function searchBestMove(
+    timeLimit = 700
+  ) {
+    if (
+      gameOver
+    ) {
+      return {
+        move:
+          null,
+
+        depth:
+          0,
+
+        score:
+          0,
+
+        nodes:
+          0,
+
+        proven:
+          false
+      };
+    }
+
+
+    /*
+      Use verified perfect opening
+      data when available.
+    */
+
+    const opening =
+      getOpeningAnalysis(
+        position
+      );
+
+
+    if (
+      opening
+    ) {
+      const choice =
+        chooseBookMove(
+          opening
+        );
+
+
+      if (
+        choice
+      ) {
+        return {
+          move:
+            choice.col,
+
+          depth:
+            MAX_MOVES -
+            position.moves,
+
+          score:
+            choice.score,
+
+          nodes:
+            0,
+
+          proven:
+            true
+        };
+      }
+    }
+
+
+    resetSearchClock(
+      timeLimit
+    );
+
+
+    heuristicTT.clear();
+
+
+    /*
+      Immediate win.
     */
 
     for (
@@ -1265,61 +2813,95 @@
       of CENTER_ORDER
     ) {
       if (
-        position.canPlay(col) &&
-        position.isWinningMove(col)
+        position.canPlay(
+          col
+        ) &&
+        position.isWinningMove(
+          col
+        )
       ) {
         return {
-          move: col,
-          depth: 1,
-          score: 1,
+          move:
+            col,
+
+          depth:
+            1,
+
+          score:
+            AI_WIN_SCORE,
+
           nodes,
-          proven: true
+
+          proven:
+            true
         };
       }
     }
 
-    const legal =
-      orderedMoves(position);
 
-    if (legal.length === 0) {
+    const safe =
+      aiOrderedColumns(
+        position.current,
+        position.mask
+      );
+
+
+    if (
+      safe.length ===
+      0
+    ) {
       const fallback =
         CENTER_ORDER.find(
           col =>
-            position.canPlay(col)
+            position.canPlay(
+              col
+            )
         );
+
 
       return {
         move:
-          fallback === undefined
+          fallback ===
+          undefined
             ? null
             : fallback,
-        depth: 0,
-        score: -1,
+
+        depth:
+          0,
+
+        score:
+          -AI_WIN_SCORE,
+
         nodes,
-        proven: true
+
+        proven:
+          true
       };
     }
 
+
     let bestMove =
-      legal[0].col;
+      safe[0];
+
 
     let bestScore =
-      -INF;
+      -AI_INF;
 
-    let proven = false;
 
-    /*
-      Try exact solving each move
-      while time remains.
+    let completedDepth =
+      0;
 
-      If exact solving is not
-      completed, ordering still
-      gives a sensible fallback.
-    */
+
+    const remaining =
+      MAX_MOVES -
+      position.moves;
+
 
     for (
-      const item
-      of legal
+      let depth = 1;
+      depth <=
+      remaining;
+      depth++
     ) {
       if (
         performance.now() >=
@@ -1328,98 +2910,176 @@
         break;
       }
 
-      const child =
-        position.clone();
 
-      child.play(
-        item.col
-      );
+      let localBest =
+        bestMove;
 
-      const score =
-        solveExactScore(
-          child
+
+      let localScore =
+        -AI_INF;
+
+
+      let alpha =
+        -AI_INF;
+
+
+      let finished =
+        true;
+
+
+      const cols =
+        aiOrderedColumns(
+          position.current,
+          position.mask
         );
 
-      if (score === null) {
+
+      const nextCurrent =
+        position.current ^
+        position.mask;
+
+
+      for (
+        const col
+        of cols
+      ) {
+        if (
+          performance.now() >=
+          deadline
+        ) {
+          finished =
+            false;
+
+          break;
+        }
+
+
+        const move =
+          moveBitRaw(
+            position.mask,
+            col
+          );
+
+
+        const child =
+          aiNegamax(
+            nextCurrent,
+
+            position.mask |
+            move,
+
+            position.moves +
+            1,
+
+            depth -
+            1,
+
+            -AI_INF,
+
+            -alpha,
+
+            1
+          );
+
+
+        if (
+          child ===
+          null
+        ) {
+          finished =
+            false;
+
+          break;
+        }
+
+
+        const score =
+          -child;
+
+
+        if (
+          score >
+          localScore
+        ) {
+          localScore =
+            score;
+
+          localBest =
+            col;
+        }
+
+
+        if (
+          score >
+          alpha
+        ) {
+          alpha =
+            score;
+        }
+      }
+
+
+      if (
+        !finished
+      ) {
         break;
       }
 
-      const ourScore =
-        -score;
+
+      bestMove =
+        localBest;
+
+
+      bestScore =
+        localScore;
+
+
+      completedDepth =
+        depth;
+
 
       if (
-        ourScore > bestScore
+        Math.abs(
+          bestScore
+        ) >=
+        AI_WIN_SCORE -
+        MAX_MOVES
       ) {
-        bestScore =
-          ourScore;
-
-        bestMove =
-          item.col;
+        break;
       }
-
-      proven = true;
     }
+
 
     return {
       move:
         bestMove,
 
       depth:
-        proven
-          ? MAX_MOVES -
-            position.moves
-          : 0,
+        completedDepth,
 
       score:
-        bestScore === -INF
+        bestScore ===
+        -AI_INF
           ? 0
           : bestScore,
 
       nodes,
 
-      proven
+      proven:
+        (
+          Math.abs(
+            bestScore
+          ) >=
+          AI_WIN_SCORE -
+          MAX_MOVES
+        ) ||
+        (
+          completedDepth >=
+          remaining
+        )
     };
   }
 
-  // ============================================================
-  // PUBLIC POSITION SOLVER
-  // ============================================================
-
-  function solvePosition(
-    timeLimit = 3000
-  ) {
-    if (gameOver) {
-      if (winner === null) {
-        return {
-          type:
-            EXACT_DRAW,
-          distance: 0
-        };
-      }
-
-      return {
-        type:
-          EXACT_UNKNOWN,
-        distance: null
-      };
-    }
-
-    resetSearchClock(
-      timeLimit
-    );
-
-    exactTable.clear();
-
-    const score =
-      solveExactScore(
-        position.clone()
-      );
-
-    return scoreToResult(
-      score,
-      position.moves
-    );
-  }
 
   // ============================================================
   // REBUILD POSITION
@@ -1428,6 +3088,7 @@
   function rebuildPosition() {
     position =
       new Position();
+
 
     for (
       const move
@@ -1439,6 +3100,7 @@
     }
   }
 
+
   // ============================================================
   // PLAY
   // ============================================================
@@ -1448,26 +3110,39 @@
       gameOver ||
       col < 0 ||
       col >= WIDTH ||
-      !position.canPlay(col)
+      !position.canPlay(
+        col
+      )
     ) {
       return null;
     }
 
+
     const row =
       heights[col];
+
 
     const player =
       currentPlayer;
 
-    const winningMove =
-      position.isWinningMove(col);
 
-    position.play(col);
+    const winningMove =
+      position.isWinningMove(
+        col
+      );
+
+
+    position.play(
+      col
+    );
+
 
     grid[row][col] =
       player;
 
+
     heights[col]--;
+
 
     const move = {
       row,
@@ -1475,29 +3150,46 @@
       player
     };
 
-    history.push(move);
+
+    history.push(
+      move
+    );
+
 
     redoStack = [];
 
-    if (winningMove) {
-      gameOver = true;
-      winner = player;
+
+    if (
+      winningMove
+    ) {
+      gameOver =
+        true;
+
+      winner =
+        player;
     }
+
 
     else if (
       position.moves >=
       MAX_MOVES
     ) {
-      gameOver = true;
-      winner = null;
+      gameOver =
+        true;
+
+      winner =
+        null;
     }
+
 
     else {
       currentPlayer =
-        player === "A"
+        player ===
+        "A"
           ? "B"
           : "A";
     }
+
 
     return {
       ...move,
@@ -1506,42 +3198,60 @@
     };
   }
 
+
   // ============================================================
   // UNDO
   // ============================================================
 
   function undo() {
     if (
-      history.length === 0
+      history.length ===
+      0
     ) {
       return null;
     }
 
+
     const move =
       history.pop();
 
-    redoStack.push(move);
+
+    redoStack.push(
+      move
+    );
+
 
     grid[
       move.row
     ][
       move.col
-    ] = null;
+    ] =
+      null;
+
 
     heights[
       move.col
     ]++;
 
+
     currentPlayer =
       move.player;
 
-    gameOver = false;
-    winner = null;
+
+    gameOver =
+      false;
+
+
+    winner =
+      null;
+
 
     rebuildPosition();
 
+
     return move;
   }
+
 
   // ============================================================
   // REDO
@@ -1549,73 +3259,104 @@
 
   function redo() {
     if (
-      redoStack.length === 0
+      redoStack.length ===
+      0
     ) {
       return null;
     }
 
+
     const move =
       redoStack.pop();
+
 
     const row =
       heights[
         move.col
       ];
 
-    if (row < 0) {
+
+    if (
+      row < 0
+    ) {
       return null;
     }
 
+
     const player =
       currentPlayer;
+
 
     const winningMove =
       position.isWinningMove(
         move.col
       );
 
+
     position.play(
       move.col
     );
 
-    grid[row][move.col] =
+
+    grid[
+      row
+    ][
+      move.col
+    ] =
       player;
 
-    heights[move.col]--;
+
+    heights[
+      move.col
+    ]--;
+
 
     const restored = {
       row,
+
       col:
         move.col,
+
       player
     };
+
 
     history.push(
       restored
     );
 
-    if (winningMove) {
-      gameOver = true;
-      winner = player;
+
+    if (
+      winningMove
+    ) {
+      gameOver =
+        true;
+
+      winner =
+        player;
     }
+
 
     else if (
       position.moves >=
       MAX_MOVES
     ) {
-      gameOver = true;
-      winner = null;
+      gameOver =
+        true;
+
+      winner =
+        null;
     }
 
-    else {
-      gameOver = false;
-      winner = null;
 
+    else {
       currentPlayer =
-        player === "A"
+        player ===
+        "A"
           ? "B"
           : "A";
     }
+
 
     return {
       ...restored,
@@ -1623,6 +3364,7 @@
       winner
     };
   }
+
 
   // ============================================================
   // RESET
@@ -1632,28 +3374,59 @@
     position =
       new Position();
 
+
     grid =
       Array.from(
-        { length: HEIGHT },
+        {
+          length:
+            HEIGHT
+        },
+
         () =>
-          Array(WIDTH).fill(null)
+          Array(
+            WIDTH
+          ).fill(
+            null
+          )
       );
+
 
     heights =
-      Array(WIDTH).fill(
-        HEIGHT - 1
+      Array(
+        WIDTH
+      ).fill(
+        HEIGHT -
+        1
       );
 
-    currentPlayer = "A";
+
+    currentPlayer =
+      "A";
+
 
     history = [];
     redoStack = [];
 
-    gameOver = false;
-    winner = null;
 
-    exactTable.clear();
+    gameOver =
+      false;
+
+
+    winner =
+      null;
+
+
+    heuristicTT.clear();
+
+
+    /*
+      Exact TT intentionally stays.
+      Proven bounds remain valid and
+      can help if a position appears
+      again later.
+    */
   }
+
 
   // ============================================================
   // STATE
@@ -1661,13 +3434,19 @@
 
   function getState() {
     return {
-      width: WIDTH,
-      height: HEIGHT,
-      connect: 4,
+      width:
+        WIDTH,
+
+      height:
+        HEIGHT,
+
+      connect:
+        4,
 
       grid:
         grid.map(
-          row => [...row]
+          row =>
+            [...row]
         ),
 
       heights:
@@ -1693,23 +3472,31 @@
     };
   }
 
+
   // ============================================================
   // LEGAL MOVES
   // ============================================================
 
   function legalMoves() {
-    return CENTER_ORDER.filter(
-      col =>
-        position.canPlay(col)
+    return (
+      CENTER_ORDER.filter(
+        col =>
+          position.canPlay(
+            col
+          )
+      )
     );
   }
+
 
   // ============================================================
   // VALIDATE
   // ============================================================
 
   function validate() {
-    let occupied = 0;
+    let occupied =
+      0;
+
 
     for (
       let row = 0;
@@ -1722,20 +3509,28 @@
         col++
       ) {
         if (
-          grid[row][col] !== null
+          grid[
+            row
+          ][
+            col
+          ] !==
+          null
         ) {
           occupied++;
         }
       }
     }
 
+
     return (
       occupied ===
         position.moves &&
+
       occupied ===
         history.length
     );
   }
+
 
   // ============================================================
   // PUBLIC API
@@ -1759,7 +3554,9 @@
     constants: {
       WIDTH,
       HEIGHT,
-      CONNECT: 4,
+
+      CONNECT:
+        4,
 
       WIN:
         EXACT_WIN,
