@@ -371,7 +371,8 @@ h1 {
 .game-connect4 #board,
 .game-connect4 .analysis,
 .game-connect4 .column-numbers {
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns:
+    repeat(7, minmax(0, 1fr));
 }
 
 
@@ -382,7 +383,8 @@ h1 {
 .game-connect5 #board,
 .game-connect5 .analysis,
 .game-connect5 .column-numbers {
-  grid-template-columns: repeat(9, minmax(0, 1fr));
+  grid-template-columns:
+    repeat(9, minmax(0, 1fr));
 }
 
 
@@ -400,6 +402,24 @@ h1 {
   line-height: 1.5;
 
   opacity: 0.72;
+}
+
+
+/* =========================
+   VERSION
+========================= */
+
+.version {
+  margin: 22px auto 6px;
+
+  font-size: 11px;
+  font-weight: bold;
+
+  letter-spacing: 0.5px;
+
+  color: #ffffff;
+
+  opacity: 0.45;
 }
 
 
@@ -466,6 +486,11 @@ h1 {
   }
 
   .legend {
+    font-size: 10px;
+  }
+
+  .version {
+    margin-top: 18px;
     font-size: 10px;
   }
 }
