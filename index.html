@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
 
@@ -8,16 +9,50 @@
     content="width=device-width, initial-scale=1.0"
   >
 
+  <meta
+    name="theme-color"
+    content="#0f1117"
+  >
+
+  <meta
+    name="description"
+    content="Connect 4 and Connect 5 with AI and position analysis."
+  >
+
   <title>Connect Games</title>
 
-  <link rel="stylesheet" href="style.css">
+  <!-- PWA -->
+  <link
+    rel="manifest"
+    href="manifest.json"
+  >
+
+  <link
+    rel="icon"
+    type="image/png"
+    sizes="192x192"
+    href="icon-192.png"
+  >
+
+  <link
+    rel="apple-touch-icon"
+    href="icon-192.png"
+  >
+
+  <!-- STYLE -->
+  <link
+    rel="stylesheet"
+    href="style.css"
+  >
 </head>
+
 
 <body>
 
   <main class="app">
 
     <h1>Connect Games</h1>
+
 
     <!-- GAME SELECTOR -->
     <div class="game-switch">
@@ -46,6 +81,7 @@
       id="gameArea"
       class="game-area game-connect4"
     >
+
 
       <!-- AI CONTROLS -->
       <div class="players">
@@ -105,7 +141,10 @@
       <!-- SOLVER -->
       <div class="solver-panel">
 
-        <h3>🧠 Solver</h3>
+        <h3>
+          🧠 Solver
+        </h3>
+
 
         <div class="solver-options">
 
@@ -137,6 +176,7 @@
           </select>
 
         </div>
+
 
         <p id="solverStatus">
           Ready
@@ -174,19 +214,45 @@
         ? = not proven
       </p>
 
+
     </section>
+
+
+    <!-- VERSION -->
+    <p class="version">
+      v1.1
+    </p>
 
   </main>
 
 
-  <!--
-    Each game has its own engine.
-    script.js only manages the shared interface.
-  -->
-
+  <!-- GAME ENGINES -->
   <script src="connect4.js"></script>
   <script src="connect5.js"></script>
+
+  <!-- SHARED INTERFACE -->
   <script src="script.js"></script>
 
+
+  <!-- SERVICE WORKER -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener(
+        "load",
+        () => {
+          navigator.serviceWorker
+            .register("./service-worker.js")
+            .catch(error => {
+              console.error(
+                "Service Worker registration failed:",
+                error
+              );
+            });
+        }
+      );
+    }
+  </script>
+
 </body>
+
 </html>
