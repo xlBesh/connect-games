@@ -1,9 +1,9 @@
 /*
   Connect Games Service Worker
-  Version: v1.1
+  Version: v1.2
 */
 
-const CACHE_NAME = "connect-games-v1.1";
+const CACHE_NAME = "connect-games-v1.2";
 
 const FILES_TO_CACHE = [
   "./",
